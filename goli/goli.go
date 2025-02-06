@@ -69,14 +69,25 @@ func (g *Goli) Put(collName string, data map[string]string) (uuid.UUID, error) {
 }
 
 func (g *Goli) Get(collName string, query map[string]string) (map[string]string, error) {
-	tx, err := g.db.Begin(false)
-	if err != nil {
-		return nil, err
-	}
+    tx, err := g.db.Begin(false)
+    if err != nil {
+        return nil, err
+    }
+    defer tx.Rollback()
 
-	bucket := tx.Bucket([]byte(collName))
-	if bucket == nil {
-		return nil, fmt.Errorf("Collection (%s) not found", collName)
-	}
+    bucket := tx.Bucket([]byte(collName))
+    if bucket == nil {
+        return nil, fmt.Errorf("Collection (%s) not found", collName)
+    }
 
+    result := make(map[string]string)
+    for k, v := range query {
+        value := bucket.Get([]byte(k))
+        if value == nil || string(value) != v {
+            return nil, fmt.Errorf("Query (%s: %s) not found in collection (%s)", k, v, collName)
+        }
+        result[k] = string(value)
+    }
+
+    return result, nil
 }
