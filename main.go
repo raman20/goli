@@ -13,15 +13,22 @@ func main() {
 		"age":  "26",
 	}
 
-	db, err := goli.New()
+	db, err := goli.New("TEST")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	id, err := db.Put("user", user)
+	userBucket, err := db.GetCollection("user")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	id, err := userBucket.Create(user)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Print(id)
+
+	db.Close()
 }
