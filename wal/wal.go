@@ -31,6 +31,7 @@ func OpenWAL(filePath string) (*WAL, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &WAL{
 		File:   file,
 		SeqNum: 0,
