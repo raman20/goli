@@ -1,95 +1,53 @@
 package wal
 
 import (
-	"fmt"
+	"bufio"
 	"os"
+	"strings"
 )
-
-type OperationType byte
-
-const (
-	PUT    OperationType = 1
-	DELETE OperationType = 2
-)
-
-type WALEntry struct {
-	SequenceNumber uint64
-	Operation      OperationType
-	KeySize        uint32
-	Key            string
-	ValueSize      uint32
-	Value          string
-}
 
 type WAL struct {
-	File   *os.File
-	SeqNum uint64
+	File *os.File
 }
 
-func OpenWAL(filePath string) (*WAL, error) {
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+func NewWal(path string) (*WAL, error) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
 
 	return &WAL{
-		File:   file,
-		SeqNum: 0,
+		File: file,
 	}, nil
 }
 
-func (wal *WAL) WALWrite(entry WALEntry) error {
-	wal.SeqNum++
-
-	line := fmt.Sprintf("%d %d %d %s %d %s\n",
-		wal.SeqNum,
-		entry.Operation,
-		entry.KeySize, entry.Key,
-		entry.ValueSize, entry.Value,
-	)
-
-	_, err := wal.File.WriteString(line)
+func (wl *WAL) entry(key, value string) error {
+	entry := key + ":" + value + "\n"
+	_, err := wl.File.WriteString(entry)
 	if err != nil {
 		return err
 	}
-
-	return wal.File.Sync()
+	return wl.File.Sync()
 }
 
-func (wal *WAL) WALRead() ([]WALEntry, error) {
-	file, err := os.Open(wal.File.Name())
-	if err != nil {
+func (wl *WAL) read() (map[string]string, error) {
+	entries := make(map[string]string)
+
+	// Create a buffered reader for efficient streaming
+	scanner := bufio.NewScanner(wl.File)
+
+	// Read file line by line
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, ":")
+		if len(parts) == 2 {
+			entries[parts[0]] = parts[1]
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	var enteries []WALEntry
-
-	for {
-		var seq uint64
-		var op OperationType
-		var keySize, valueSize uint32
-		var key, value string
-
-		_, err := fmt.Fscan(file, "%d %d %d %s %d %s\n",
-			&seq, &op, &keySize, &key, &valueSize, &value,
-		)
-
-		if err != nil {
-			break
-		}
-
-		enteries = append(enteries, WALEntry{
-			SequenceNumber: seq,
-			Operation:      op,
-			KeySize:        keySize,
-			Key:            key,
-			ValueSize:      valueSize,
-			Value:          value,
-		})
-	}
-	return enteries, nil
-}
-func (wal *WAL) Close() error {
-	return wal.File.Close()
+	return entries, nil
 }
