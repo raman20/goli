@@ -1,12 +1,20 @@
-package utils
+package storage
 
-import "math/rand/v2"
+import (
+	"errors"
+	"math/rand/v2"
+	"strings"
+	"sync"
+)
 
 type SkipList struct {
-	head      *SkipListNode
-	p         float64
-	currLevel int
-	maxLevel  int
+	head       *SkipListNode
+	p          float64
+	currLevel  int
+	maxLevel   int
+	mu         sync.RWMutex
+	size       int
+	comparator func(a, b string) int // Allow custom comparators
 }
 
 type SkipListNode struct {
@@ -16,15 +24,33 @@ type SkipListNode struct {
 }
 
 func InitSL(p float64, maxLevel int) *SkipList {
+	if p <= 0 || p >= 1 {
+		p = 0.5 // Default probability
+	}
+	if maxLevel <= 0 {
+		maxLevel = 16 // Default max level
+	}
+
 	return &SkipList{
-		head:      nil,
-		p:         p,
-		currLevel: 0,
-		maxLevel:  maxLevel,
+		head: &SkipListNode{
+			key:    "",
+			value:  "",
+			levels: make([]*SkipListNode, maxLevel),
+		},
+		p:          p,
+		maxLevel:   maxLevel,
+		currLevel:  1,
+		comparator: strings.Compare,
 	}
 }
 
-func (sl *SkipList) Put(key string, value string) {
+func (sl *SkipList) Put(key string, value string) error {
+	if key == "" {
+		return errors.New("key cannot be empty")
+	}
+
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
 
 	levelTrack := make([]*SkipListNode, sl.maxLevel)
 
@@ -35,7 +61,8 @@ func (sl *SkipList) Put(key string, value string) {
 			levels: make([]*SkipListNode, sl.maxLevel),
 		}
 		sl.currLevel = 1
-		return
+		sl.size++
+		return nil
 	}
 
 	currentNode := sl.head
@@ -67,6 +94,15 @@ func (sl *SkipList) Put(key string, value string) {
 		levelTrack[i].levels[i] = newNode
 	}
 
+	// Check for duplicate key
+	if currentNode.key == key {
+		currentNode.value = value // Update value if key exists
+		sl.size++
+		return nil
+	}
+
+	sl.size++
+	return nil
 }
 
 func (sl *SkipList) Get(key string) (string, bool) {
@@ -119,6 +155,7 @@ func (sl *SkipList) Delete(key string) bool {
 		sl.currLevel--
 	}
 
+	sl.size--
 	return true
 }
 
@@ -128,4 +165,44 @@ func (sl *SkipList) levelUp() int {
 		level++
 	}
 	return level
+}
+
+func (sl *SkipList) Size() int {
+	sl.mu.RLock()
+	defer sl.mu.RUnlock()
+	return sl.size
+}
+
+type Iterator struct {
+	current *SkipListNode
+	sl      *SkipList
+}
+
+func (sl *SkipList) Iterator() *Iterator {
+	return &Iterator{
+		current: sl.head,
+		sl:      sl,
+	}
+}
+
+func (it *Iterator) Next() bool {
+	if it.current == nil || it.current.levels[0] == nil {
+		return false
+	}
+	it.current = it.current.levels[0]
+	return true
+}
+
+func (it *Iterator) Key() string {
+	if it.current == nil {
+		return ""
+	}
+	return it.current.key
+}
+
+func (it *Iterator) Value() string {
+	if it.current == nil {
+		return ""
+	}
+	return it.current.value
 }
