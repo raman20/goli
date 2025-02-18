@@ -3,14 +3,15 @@ package storage
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sync"
+)
 
-	"github.com/google/uuid"
+var (
+	ErrMemtableFull   = errors.New("memtable is full")
+	ErrMemtableClosed = errors.New("memtable is closed")
 )
 
 type Memtable struct {
-	id        string
 	wal       *WAL
 	data      *SkipList
 	mu        sync.RWMutex
@@ -20,13 +21,10 @@ type Memtable struct {
 	closeOnce sync.Once
 }
 
-func InitMemtable(dbName string, maxSize int64) (*Memtable, error) {
+func InitMemtable(walPath string, maxSize int64) (*Memtable, error) {
 	if maxSize <= 0 {
 		maxSize = 32 * 1024 * 1024 // Default 32MB
 	}
-
-	id := uuid.NewString()
-	walPath := filepath.Join(dbName, id+"_wal.log")
 
 	wal, err := InitWal(walPath)
 	if err != nil {
@@ -48,7 +46,6 @@ func InitMemtable(dbName string, maxSize int64) (*Memtable, error) {
 	}
 
 	return &Memtable{
-		id:      id,
 		wal:     wal,
 		data:    skl,
 		maxSize: maxSize,
@@ -60,13 +57,13 @@ func (m *Memtable) Set(key, value string) error {
 	defer m.mu.Unlock()
 
 	if m.closed {
-		return errors.New("memtable is closed")
+		return ErrMemtableClosed
 	}
 
 	// Estimate size increase
 	newSize := m.size + int64(len(key)+len(value))
 	if newSize > m.maxSize {
-		return errors.New("memtable is full")
+		return ErrMemtableFull
 	}
 
 	if err := m.wal.Entry(key, value); err != nil {
