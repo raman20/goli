@@ -18,8 +18,8 @@ var (
 
 type DB struct {
 	Name         string
-	currMemtable *Memtable // Active memtable for writes
-	immutable    *Memtable // Single immutable memtable pending flush
+	currMemtable *Memtable   // Active memtable for writes
+	immutable    []*Memtable // Slice of immutable memtables pending flush
 	mu           sync.RWMutex
 	closed       bool
 	closeOnce    sync.Once
@@ -81,7 +81,7 @@ func Open(name string, opts Options) (*DB, error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to initialize memtable from WAL %s: %w", wal.Name(), err)
 			}
-			db.currMemtable = mt
+			db.immutable = append(db.immutable, mt) // Add to immutable slice
 		}
 	}
 
@@ -103,15 +103,9 @@ func (db *DB) rotateMemtable() error {
 
 	// If there's an existing current memtable, make it immutable
 	if db.currMemtable != nil {
-		// Wait for any existing immutable memtable to be flushed
-		if db.immutable != nil {
-			if err := db.flushImmutableMemtable(); err != nil {
-				return fmt.Errorf("failed to flush immutable memtable: %w", err)
-			}
-		}
-		db.immutable = db.currMemtable
+		db.immutable = append(db.immutable, db.currMemtable) // Add to immutable slice
 		// Trigger background flush
-		go db.flushImmutableMemtable()
+		go db.flushImmutableMemtables()
 	}
 
 	db.currMemtable = newMemtable
@@ -163,9 +157,9 @@ func (db *DB) Get(key string) (string, bool) {
 		return value, true
 	}
 
-	// Then check immutable memtable if it exists
-	if db.immutable != nil {
-		if value, found := db.immutable.Get(key); found {
+	// Then check all immutable memtables
+	for _, mt := range db.immutable {
+		if value, found := mt.Get(key); found {
 			return value, true
 		}
 	}
@@ -192,9 +186,9 @@ func (db *DB) Close() error {
 			return
 		}
 
-		// Close immutable memtable if it exists
-		if db.immutable != nil {
-			if e := db.immutable.Close(); e != nil {
+		// Close all immutable memtables
+		for _, mt := range db.immutable {
+			if e := mt.Close(); e != nil {
 				err = fmt.Errorf("failed to close immutable memtable: %w", e)
 				return
 			}
@@ -203,26 +197,25 @@ func (db *DB) Close() error {
 	return err
 }
 
-func (db *DB) flushImmutableMemtable() error {
-	if db.immutable == nil {
-		return nil
-	}
-
-	if err := db.compactMemtable(db.immutable); err != nil {
-		return fmt.Errorf("failed to compact memtable: %w", err)
-	}
-
-	// Remove WAL file
-	walPath := db.immutable.wal.File.Name()
-	if err := os.Remove(walPath); err != nil {
-		return fmt.Errorf("failed to remove WAL file %s: %w", walPath, err)
-	}
-
+func (db *DB) flushImmutableMemtables() {
 	db.mu.Lock()
-	db.immutable = nil
-	db.mu.Unlock()
+	defer db.mu.Unlock()
 
-	return nil
+	for _, mt := range db.immutable {
+		if err := db.compactMemtable(mt); err != nil {
+			fmt.Printf("failed to compact memtable: %v\n", err)
+			continue
+		}
+
+		// Remove WAL file
+		walPath := mt.wal.File.Name()
+		if err := os.Remove(walPath); err != nil {
+			fmt.Printf("failed to remove WAL file %s: %v\n", walPath, err)
+		}
+	}
+
+	// Clear the immutable slice after flushing
+	db.immutable = nil
 }
 
 func (db *DB) compactMemtable(mt *Memtable) error {
