@@ -53,26 +53,20 @@ func (sl *SkipList) Put(key string, value string) error {
 	defer sl.mu.Unlock()
 
 	levelTrack := make([]*SkipListNode, sl.maxLevel)
-
-	if sl.head == nil {
-		sl.head = &SkipListNode{
-			key:    key,
-			value:  value,
-			levels: make([]*SkipListNode, sl.maxLevel),
-		}
-		sl.currLevel = 1
-		sl.size++
-		return nil
-	}
-
 	currentNode := sl.head
 
 	for i := sl.currLevel - 1; i >= 0; i-- {
 		for currentNode.levels[i] != nil && currentNode.levels[i].key < key {
 			currentNode = currentNode.levels[i]
 		}
-
 		levelTrack[i] = currentNode
+	}
+
+	// Check if the key already exists (it would be the next node at level 0)
+	next := currentNode.levels[0]
+	if next != nil && next.key == key {
+		next.value = value
+		return nil
 	}
 
 	newLevel := sl.levelUp()
@@ -92,13 +86,6 @@ func (sl *SkipList) Put(key string, value string) error {
 	for i := 0; i < newLevel; i++ {
 		newNode.levels[i] = levelTrack[i].levels[i]
 		levelTrack[i].levels[i] = newNode
-	}
-
-	// Check for duplicate key
-	if currentNode.key == key {
-		currentNode.value = value // Update value if key exists
-		sl.size++
-		return nil
 	}
 
 	sl.size++
