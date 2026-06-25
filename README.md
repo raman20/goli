@@ -116,12 +116,28 @@ Clone the repository and run the test suite to verify the integrity of the stora
 make test
 ```
 
-### 💻 Run the Interactive LSM Demo
-Compile and run the interactive CLI demo:
+### 💻 Run the Interactive Database Shell (CLI)
+Compile and run the interactive CLI:
 ```bash
+# Compile and start the interactive database shell
 make run
 ```
-The demo will run through a complete database lifecycle, showing active writes, memtable rotation, automatic SSTable creation, prefix scans, deletions, and crash recovery from logs.
+This opens the Goli interactive prompt (`goli> `). You can execute the following database operations:
+* `set <key> <value>`: Store a key-value pair.
+* `get <key>`: Retrieve the value of a key.
+* `delete <key>`: Delete a key (writes a tombstone).
+* `scan <prefix>`: Scan and list all keys matching the prefix.
+* `stats`: Show engine metrics (active memtable size, counts of files).
+* `exit` / `quit`: Safely exit the database shell.
+
+You can also run one-off CLI commands directly:
+```bash
+# Example: write a key
+./bin/goli set app_version 1.0.0
+
+# Example: read stats
+./bin/goli stats
+```
 
 ---
 
