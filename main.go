@@ -1,100 +1,147 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
-	"time"
+	"strings"
 
 	"github.com/raman20/storage"
 )
 
 func main() {
-	log.Println("=== Starting Goli LSM Key-Value Engine Demo ===")
-
-	dataDir := "data_demo"
-	// Clean up any old demo files to start fresh
-	os.RemoveAll(dataDir)
-
-	// 1. Configure Options
 	opts := storage.DefaultOptions()
-	opts.DataDir = dataDir
-	// Set memtable size to 256 bytes so that inserting even a few keys triggers flushes and SSTable creation!
-	opts.MemtableSize = 256
-	opts.CompactionThreshold = 3
+	opts.DataDir = "data"
+	// Set memtable size to 1MB for normal CLI use
+	opts.MemtableSize = 1024 * 1024
 
-	// 2. Open Goli DB
-	db, err := storage.Open("demo_db", opts)
+	db, err := storage.Open("goli_db", opts)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
+	defer db.Close()
 
-	fmt.Println("\n--- [1] Writing initial keys (Writing to active Memtable & WAL) ---")
-	db.Set("user:1:name", "Raman")
-	db.Set("user:1:role", "Admin")
-	db.Set("user:2:name", "Alice")
-	
-	fmt.Printf("Get(user:1:name) -> ")
-	if val, ok := db.Get("user:1:name"); ok {
-		fmt.Printf("Found: %q\n", val)
-	} else {
-		fmt.Printf("Not Found\n")
+	// If arguments are provided, run as single-shot CLI command
+	if len(os.Args) > 1 {
+		runSingleCommand(db, os.Args[1:])
+		return
 	}
 
-	fmt.Println("\n--- [2] Writing more keys to trigger Memtable rotation & SSTable Flushes ---")
-	// These writes will exceed the 256 bytes memtable limit and force rotations to disk
-	for i := 0; i < 15; i++ {
-		key := fmt.Sprintf("extra:key:%d", i)
-		val := fmt.Sprintf("value_payload_data_string_%d", i)
-		db.Set(key, val)
+	// Otherwise, start interactive REPL shell
+	runREPL(db)
+}
+
+func runSingleCommand(db *storage.DB, args []string) {
+	cmd := strings.ToLower(args[0])
+	switch cmd {
+	case "set", "put":
+		if len(args) < 3 {
+			fmt.Println("Usage: goli set <key> <value>")
+			os.Exit(1)
+		}
+		key := args[1]
+		val := strings.Join(args[2:], " ")
+		if err := db.Set(key, val); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("OK")
+
+	case "get":
+		if len(args) < 2 {
+			fmt.Println("Usage: goli get <key>")
+			os.Exit(1)
+		}
+		val, ok := db.Get(args[1])
+		if !ok {
+			fmt.Println("(nil)")
+		} else {
+			fmt.Println(val)
+		}
+
+	case "del", "delete":
+		if len(args) < 2 {
+			fmt.Println("Usage: goli delete <key>")
+			os.Exit(1)
+		}
+		if err := db.Delete(args[1]); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("OK")
+
+	case "scan":
+		if len(args) < 2 {
+			fmt.Println("Usage: goli scan <prefix>")
+			os.Exit(1)
+		}
+		results, err := db.Scan(args[1])
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(results) == 0 {
+			fmt.Println("(empty)")
+		} else {
+			for k, v := range results {
+				fmt.Printf("%s => %s\n", k, v)
+			}
+		}
+
+	case "stats":
+		stats := db.Stats()
+		fmt.Printf("Active Memtable Size:     %d bytes\n", stats.MemtableSize)
+		fmt.Printf("Immutable Memtable Count: %d\n", stats.ImmutableCount)
+		fmt.Printf("SSTable File Count:       %d\n", stats.SSTableCount)
+		if len(stats.SSTableFiles) > 0 {
+			fmt.Printf("SSTable Files:\n")
+			for _, file := range stats.SSTableFiles {
+				fmt.Printf("  - %s\n", file)
+			}
+		}
+
+	default:
+		fmt.Printf("Unknown command: %s. Supported: set, get, delete, scan, stats\n", cmd)
+		os.Exit(1)
 	}
+}
 
-	// Give a tiny window for background goroutines (flushes & compactions) to finish disk I/O
-	time.Sleep(150 * time.Millisecond)
+func runREPL(db *storage.DB) {
+	fmt.Println("🚀 Welcome to the Goli LSM Database Interactive Shell")
+	fmt.Println("Type \"help\" for list of commands, \"exit\" or \"quit\" to quit.")
+	fmt.Println()
 
-	fmt.Println("\n--- [3] Performing prefix scanning across Memtable + SSTables ---")
-	results, err := db.Scan("extra:")
-	if err != nil {
-		log.Fatalf("Scan failed: %v", err)
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("goli> ")
+		if !scanner.Scan() {
+			break
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		cmd := strings.ToLower(parts[0])
+
+		if cmd == "exit" || cmd == "quit" {
+			fmt.Println("Goodbye!")
+			break
+		}
+
+		if cmd == "help" {
+			fmt.Println("Available commands:")
+			fmt.Println("  set <key> <value>   - Store a key-value pair")
+			fmt.Println("  get <key>           - Retrieve value for a key")
+			fmt.Println("  delete <key>        - Delete a key")
+			fmt.Println("  scan <prefix>       - List keys matching a prefix")
+			fmt.Println("  stats               - Show engine metrics")
+			fmt.Println("  exit / quit         - Exit the shell")
+			continue
+		}
+
+		runSingleCommand(db, parts)
 	}
-	fmt.Printf("Found %d keys starting with 'extra:':\n", len(results))
-	for k, v := range results {
-		fmt.Printf("  %s => %s\n", k, v)
-	}
-
-	fmt.Println("\n--- [4] Testing Deletion (Tombstone) ---")
-	db.Delete("user:2:name")
-	if _, ok := db.Get("user:2:name"); !ok {
-		fmt.Println("user:2:name is successfully deleted (Get returned Not Found)")
-	}
-
-	fmt.Println("\n--- [5] Closing the database and preparing for crash recovery demo ---")
-	db.Close()
-
-	fmt.Println("\n--- [6] Re-opening the database (Recovering state from SSTables & WAL) ---")
-	db2, err := storage.Open("demo_db", opts)
-	if err != nil {
-		log.Fatalf("Failed to re-open database: %v", err)
-	}
-	defer db2.Close()
-
-	fmt.Println("\n--- [7] Querying recovered state ---")
-	if val, ok := db2.Get("user:1:name"); ok {
-		fmt.Printf("Recovered user:1:name: %q (expected \"Raman\")\n", val)
-	} else {
-		fmt.Printf("Failed to recover user:1:name!\n")
-	}
-
-	if _, ok := db2.Get("user:2:name"); !ok {
-		fmt.Println("Recovered user:2:name tombstone: Still deleted (expected Not Found)")
-	}
-
-	// Verify we can read the flushed keys from SSTables
-	if val, ok := db2.Get("extra:key:5"); ok {
-		fmt.Printf("Recovered extra:key:5: %q (expected \"value_payload_data_string_5\")\n", val)
-	} else {
-		fmt.Printf("Failed to recover extra:key:5!\n")
-	}
-
-	fmt.Println("\n=== Goli LSM Demo completed successfully! ===")
 }

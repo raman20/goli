@@ -605,4 +605,34 @@ func (db *DB) Scan(prefix string) (map[string]string, error) {
 	return results, nil
 }
 
+type DBStats struct {
+	MemtableSize   int64
+	ImmutableCount int
+	SSTableCount   int
+	SSTableFiles   []string
+}
+
+func (db *DB) Stats() DBStats {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var sstFiles []string
+	for _, sst := range db.sstables {
+		sstFiles = append(sstFiles, filepath.Base(sst.filePath))
+	}
+
+	var memSize int64
+	if db.currMemtable != nil {
+		memSize = db.currMemtable.Size()
+	}
+
+	return DBStats{
+		MemtableSize:   memSize,
+		ImmutableCount: len(db.immutable),
+		SSTableCount:   len(db.sstables),
+		SSTableFiles:   sstFiles,
+	}
+}
+
+
 
