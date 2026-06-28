@@ -1,10 +1,12 @@
-package storage
+package lsm
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/raman20/storage"
 )
 
 func TestLSMIndexBasic(t *testing.T) {
@@ -19,24 +21,24 @@ func TestLSMIndexBasic(t *testing.T) {
 	os.MkdirAll(walDir, 0755)
 	os.MkdirAll(sstDir, 0755)
 
-	opts := Options{
+	opts := storage.Options{
 		MemtableSize:        256, // Small size to force rapid rotation
 		CompactionThreshold: 2,
 	}
 
 	// 1. Initialize Index
-	idx, err := NewLSMIndex(walDir, sstDir, opts, nil)
+	idx, err := NewLSMIndex(walDir, sstDir, opts)
 	if err != nil {
 		t.Fatalf("failed to create LSMIndex: %v", err)
 	}
 
 	// 2. Put key coordinates
-	ref1 := RecordRef{FileID: 1, Offset: 100, Length: 20}
+	ref1 := storage.RecordRef{FileID: 1, Offset: 100, Length: 20}
 	if err := idx.Put([]byte("key1"), ref1); err != nil {
 		t.Fatalf("failed to put ref1: %v", err)
 	}
 
-	ref2 := RecordRef{FileID: 1, Offset: 120, Length: 30}
+	ref2 := storage.RecordRef{FileID: 1, Offset: 120, Length: 30}
 	if err := idx.Put([]byte("key2"), ref2); err != nil {
 		t.Fatalf("failed to put ref2: %v", err)
 	}
@@ -51,9 +53,8 @@ func TestLSMIndexBasic(t *testing.T) {
 	}
 
 	// 4. Test rotation and rollover to SSTable
-	// Set more keys to fill memtable
 	for i := 0; i < 20; i++ {
-		ref := RecordRef{FileID: 2, Offset: int64(i * 10), Length: 10}
+		ref := storage.RecordRef{FileID: 2, Offset: int64(i * 10), Length: 10}
 		idx.Put([]byte(string(rune(i+65))), ref)
 	}
 

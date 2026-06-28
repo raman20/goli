@@ -116,7 +116,10 @@ package main
 import (
 	"fmt"
 	"log"
-	
+	"os"
+	"path/filepath"
+
+	"github.com/raman20/index/lsm"
 	"github.com/raman20/storage"
 )
 
@@ -124,8 +127,21 @@ func main() {
 	opts := storage.DefaultOptions()
 	opts.DataDir = "my_data"
 
-	// Open Goli DB instance
-	db, err := storage.Open("user_store", opts)
+	// 1. Setup directories for the LSM Index
+	dbPath := filepath.Join(opts.DataDir, "user_store")
+	walPath := filepath.Join(dbPath, "wal")
+	sstPath := filepath.Join(dbPath, "sst")
+	_ = os.MkdirAll(walPath, 0755)
+	_ = os.MkdirAll(sstPath, 0755)
+
+	// 2. Initialize the pluggable LSM Index
+	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, opts)
+	if err != nil {
+		log.Fatalf("Failed to initialize LSM Index: %v", err)
+	}
+
+	// 3. Open Goli DB instance with the injected index
+	db, err := storage.Open("user_store", opts, lsmIdx)
 	if err != nil {
 		log.Fatalf("Failed to open Goli: %v", err)
 	}

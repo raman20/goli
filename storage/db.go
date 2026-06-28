@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"sync"
 	"unsafe"
 )
@@ -48,13 +47,9 @@ func DefaultOptions() Options {
 	}
 }
 
-func Open(name string, opts Options) (*DB, error) {
+func Open(name string, opts Options, index Index) (*DB, error) {
 	if name == "" {
 		return nil, ErrKeyEmpty
-	}
-
-	if opts.CompactionThreshold <= 1 {
-		opts.CompactionThreshold = 4
 	}
 
 	// Create directory structure
@@ -69,61 +64,21 @@ func Open(name string, opts Options) (*DB, error) {
 		}
 	}
 
+	// 1. Initialize Segment Manager
+	sm, err := NewSegmentManager(segmentPath, opts.MemtableSize*2)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize SegmentManager: %w", err)
+	}
+
 	db := &DB{
 		Name:       name,
 		options:    opts,
 		walDir:     walPath,
 		sstDir:     sstPath,
 		segmentDir: segmentPath,
+		segmentMgr: sm,
+		index:      index,
 	}
-
-	// 1. Initialize Segment Manager
-	sm, err := NewSegmentManager(segmentPath, opts.MemtableSize*2)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize SegmentManager: %w", err)
-	}
-	db.segmentMgr = sm
-
-	// 2. Load existing SSTables from sstDir
-	ssts, err := os.ReadDir(sstPath)
-	if err != nil {
-		sm.Close()
-		return nil, fmt.Errorf("failed to read SST directory: %w", err)
-	}
-
-	var sstFiles []string
-	for _, entry := range ssts {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".sst" {
-			sstFiles = append(sstFiles, entry.Name())
-		}
-	}
-
-	sort.Strings(sstFiles)
-
-	var loadedSSTables []*SSTable
-	for i := len(sstFiles) - 1; i >= 0; i-- {
-		sstPathFile := filepath.Join(sstPath, sstFiles[i])
-		sst, err := OpenSSTable(sstPathFile)
-		if err != nil {
-			for _, opened := range loadedSSTables {
-				opened.Close()
-			}
-			sm.Close()
-			return nil, fmt.Errorf("failed to open SSTable %s: %w", sstFiles[i], err)
-		}
-		loadedSSTables = append(loadedSSTables, sst)
-	}
-
-	// 3. Initialize Pluggable LSM Index
-	lsmIdx, err := NewLSMIndex(walPath, sstPath, opts, loadedSSTables)
-	if err != nil {
-		for _, opened := range loadedSSTables {
-			opened.Close()
-		}
-		sm.Close()
-		return nil, fmt.Errorf("failed to initialize LSMIndex: %w", err)
-	}
-	db.index = lsmIdx
 
 	return db, nil
 }
@@ -283,28 +238,12 @@ func (db *DB) Stats() DBStats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	lsm, ok := db.index.(*LSMIndex)
-	if !ok {
-		return DBStats{}
-	}
-
-	lsm.mu.RLock()
-	defer lsm.mu.RUnlock()
-
-	var sstFiles []string
-	for _, sst := range lsm.sstables {
-		sstFiles = append(sstFiles, filepath.Base(sst.filePath))
-	}
-
-	var memSize int64
-	if lsm.currMemtable != nil {
-		memSize = lsm.currMemtable.Size()
-	}
+	istats := db.index.Stats()
 
 	return DBStats{
-		MemtableSize:   memSize,
-		ImmutableCount: len(lsm.immutable),
-		SSTableCount:   len(lsm.sstables),
-		SSTableFiles:   sstFiles,
+		MemtableSize:   istats.MemtableSize,
+		ImmutableCount: istats.ImmutableCount,
+		SSTableCount:   istats.SSTableCount,
+		SSTableFiles:   istats.SSTableFiles,
 	}
 }

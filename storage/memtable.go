@@ -144,3 +144,11 @@ func (m *Memtable) Size() int64 {
 	defer m.mu.RUnlock()
 	return m.size
 }
+
+func (m *Memtable) DataBlock() *SkipList {
+	return m.data
+}
+
+func (m *Memtable) WALFile() *WAL {
+	return m.wal
+}

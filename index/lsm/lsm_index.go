@@ -1,4 +1,4 @@
-package storage
+package lsm
 
 import (
 	"encoding/binary"
@@ -6,52 +6,89 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/google/uuid"
+	"github.com/raman20/storage"
 )
 
 type LSMIndex struct {
-	currMemtable *Memtable
-	immutable    []*Memtable
-	sstables     []*SSTable
+	currMemtable *storage.Memtable
+	immutable    []*storage.Memtable
+	sstables     []*storage.SSTable
 	mu           sync.RWMutex
-	options      Options
+	options      storage.Options
 	walDir       string
 	sstDir       string
 	closed       bool
 }
 
-// NewLSMIndex initializes the LSM-Tree index.
-func NewLSMIndex(walDir, sstDir string, opts Options, sstables []*SSTable) (*LSMIndex, error) {
+// NewLSMIndex initializes the LSM-Tree index and loads existing SSTables and WALs.
+func NewLSMIndex(walDir, sstDir string, opts storage.Options) (*LSMIndex, error) {
 	idx := &LSMIndex{
-		walDir:   walDir,
-		sstDir:   sstDir,
-		options:  opts,
-		sstables: sstables,
+		walDir:  walDir,
+		sstDir:  sstDir,
+		options: opts,
 	}
 
-	// Recover existing WAL files as immutable memtables
+	// 1. Load existing SSTables from sstDir
+	ssts, err := os.ReadDir(sstDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SST directory: %w", err)
+	}
+
+	var sstFiles []string
+	for _, entry := range ssts {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".sst" {
+			sstFiles = append(sstFiles, entry.Name())
+		}
+	}
+
+	sort.Strings(sstFiles)
+
+	for i := len(sstFiles) - 1; i >= 0; i-- {
+		sstPathFile := filepath.Join(sstDir, sstFiles[i])
+		sst, err := storage.OpenSSTable(sstPathFile)
+		if err != nil {
+			for _, opened := range idx.sstables {
+				opened.Close()
+			}
+			return nil, fmt.Errorf("failed to open SSTable %s: %w", sstFiles[i], err)
+		}
+		idx.sstables = append(idx.sstables, sst)
+	}
+
+	// 2. Recover existing WAL files as immutable memtables
 	wals, err := os.ReadDir(walDir)
 	if err != nil {
+		for _, opened := range idx.sstables {
+			opened.Close()
+		}
 		return nil, fmt.Errorf("failed to read WAL directory: %w", err)
 	}
 
 	for _, wal := range wals {
 		if !wal.IsDir() {
-			mt, err := InitMemtable(filepath.Join(walDir, wal.Name()), opts.MemtableSize)
+			mt, err := storage.InitMemtable(filepath.Join(walDir, wal.Name()), opts.MemtableSize)
 			if err != nil {
+				for _, opened := range idx.sstables {
+					opened.Close()
+				}
 				return nil, fmt.Errorf("failed to initialize memtable from WAL %s: %w", wal.Name(), err)
 			}
 			idx.immutable = append(idx.immutable, mt)
 		}
 	}
 
-	// Create initial active memtable
+	// 3. Create initial active memtable
 	if err := idx.rotateMemtable(); err != nil {
+		for _, opened := range idx.sstables {
+			opened.Close()
+		}
 		return nil, err
 	}
 
@@ -60,7 +97,7 @@ func NewLSMIndex(walDir, sstDir string, opts Options, sstables []*SSTable) (*LSM
 
 func (idx *LSMIndex) rotateMemtable() error {
 	walFile := filepath.Join(idx.walDir, uuid.NewString()+".log")
-	newMemtable, err := InitMemtable(walFile, idx.options.MemtableSize)
+	newMemtable, err := storage.InitMemtable(walFile, idx.options.MemtableSize)
 	if err != nil {
 		return fmt.Errorf("failed to create active memtable: %w", err)
 	}
@@ -74,7 +111,7 @@ func (idx *LSMIndex) rotateMemtable() error {
 	return nil
 }
 
-func marshalRef(ref RecordRef) string {
+func marshalRef(ref storage.RecordRef) string {
 	buf := make([]byte, 16)
 	binary.BigEndian.PutUint32(buf[0:4], ref.FileID)
 	binary.BigEndian.PutUint64(buf[4:12], uint64(ref.Offset))
@@ -82,15 +119,15 @@ func marshalRef(ref RecordRef) string {
 	return unsafe.String(&buf[0], 16)
 }
 
-func unmarshalRef(data string) RecordRef {
+func unmarshalRef(data string) storage.RecordRef {
 	if len(data) < 16 {
-		return RecordRef{}
+		return storage.RecordRef{}
 	}
 	fileID := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
 	offset := int64(data[4])<<56 | int64(data[5])<<48 | int64(data[6])<<40 | int64(data[7])<<32 |
 		int64(data[8])<<24 | int64(data[9])<<16 | int64(data[10])<<8 | int64(data[11])
 	length := uint32(data[12])<<24 | uint32(data[13])<<16 | uint32(data[14])<<8 | uint32(data[15])
-	return RecordRef{
+	return storage.RecordRef{
 		FileID: fileID,
 		Offset: offset,
 		Length: length,
@@ -98,18 +135,18 @@ func unmarshalRef(data string) RecordRef {
 }
 
 // Put maps a key to its RecordRef in the active memtable.
-func (idx *LSMIndex) Put(key []byte, ref RecordRef) error {
+func (idx *LSMIndex) Put(key []byte, ref storage.RecordRef) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	if idx.closed {
-		return ErrDBClosed
+		return storage.ErrDBClosed
 	}
 
 	valStr := marshalRef(ref)
 	err := idx.currMemtable.Set(string(key), valStr)
 	if err != nil {
-		if errors.Is(err, ErrMemtableFull) {
+		if errors.Is(err, storage.ErrMemtableFull) {
 			if err := idx.rotateMemtable(); err != nil {
 				return err
 			}
@@ -122,12 +159,12 @@ func (idx *LSMIndex) Put(key []byte, ref RecordRef) error {
 }
 
 // Get retrieves the RecordRef for a key by searching the memtables and SSTables.
-func (idx *LSMIndex) Get(key []byte) (RecordRef, bool, error) {
+func (idx *LSMIndex) Get(key []byte) (storage.RecordRef, bool, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	if idx.closed {
-		return RecordRef{}, false, ErrDBClosed
+		return storage.RecordRef{}, false, storage.ErrDBClosed
 	}
 
 	keyStr := string(key)
@@ -135,7 +172,7 @@ func (idx *LSMIndex) Get(key []byte) (RecordRef, bool, error) {
 	// 1. Check active memtable
 	if value, found := idx.currMemtable.Get(keyStr); found {
 		if value == "" {
-			return RecordRef{}, false, nil // Tombstone
+			return storage.RecordRef{}, false, nil // Tombstone
 		}
 		return unmarshalRef(value), true, nil
 	}
@@ -145,7 +182,7 @@ func (idx *LSMIndex) Get(key []byte) (RecordRef, bool, error) {
 		mt := idx.immutable[i]
 		if value, found := mt.Get(keyStr); found {
 			if value == "" {
-				return RecordRef{}, false, nil // Tombstone
+				return storage.RecordRef{}, false, nil // Tombstone
 			}
 			return unmarshalRef(value), true, nil
 		}
@@ -155,13 +192,13 @@ func (idx *LSMIndex) Get(key []byte) (RecordRef, bool, error) {
 	for _, sst := range idx.sstables {
 		if value, found, err := sst.Get(keyStr); err == nil && found {
 			if value == "" {
-				return RecordRef{}, false, nil // Tombstone
+				return storage.RecordRef{}, false, nil // Tombstone
 			}
 			return unmarshalRef(value), true, nil
 		}
 	}
 
-	return RecordRef{}, false, nil
+	return storage.RecordRef{}, false, nil
 }
 
 // Delete writes a tombstone for a key.
@@ -170,12 +207,12 @@ func (idx *LSMIndex) Delete(key []byte) error {
 	defer idx.mu.Unlock()
 
 	if idx.closed {
-		return ErrDBClosed
+		return storage.ErrDBClosed
 	}
 
 	err := idx.currMemtable.Delete(string(key))
 	if err != nil {
-		if errors.Is(err, ErrMemtableFull) {
+		if errors.Is(err, storage.ErrMemtableFull) {
 			if err := idx.rotateMemtable(); err != nil {
 				return err
 			}
@@ -188,12 +225,12 @@ func (idx *LSMIndex) Delete(key []byte) error {
 }
 
 // Scan returns all RecordRefs whose keys start with the prefix.
-func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
+func (idx *LSMIndex) Scan(prefix []byte) ([]storage.RecordRef, error) {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
 	if idx.closed {
-		return nil, ErrDBClosed
+		return nil, storage.ErrDBClosed
 	}
 
 	prefixStr := string(prefix)
@@ -202,16 +239,16 @@ func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
 	// 1. Scan SSTables (oldest to newest)
 	for i := len(idx.sstables) - 1; i >= 0; i-- {
 		sst := idx.sstables[i]
-		pos := sortSearchKeys(sst.index, prefixStr)
+		pos := sortSearchKeys(sst.IndexBlock(), prefixStr)
 
-		for j := pos; j < len(sst.index); j++ {
-			entry := sst.index[j]
+		for j := pos; j < len(sst.IndexBlock()); j++ {
+			entry := sst.IndexBlock()[j]
 			if !strings.HasPrefix(entry.Key, prefixStr) {
 				break
 			}
 			valOffset := entry.Offset + 8 + int64(len(entry.Key))
 			valBuf := make([]byte, entry.ValLen)
-			if _, err := sst.file.ReadAt(valBuf, valOffset); err != nil {
+			if _, err := sst.FileHandle().ReadAt(valBuf, valOffset); err != nil {
 				return nil, fmt.Errorf("failed to read value during scan: %w", err)
 			}
 			results[entry.Key] = string(valBuf)
@@ -221,7 +258,7 @@ func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
 	// 2. Scan immutable memtables
 	for i := 0; i < len(idx.immutable); i++ {
 		mt := idx.immutable[i]
-		it := mt.data.Iterator()
+		it := mt.DataBlock().Iterator()
 		for it.Next() {
 			key := it.Key()
 			if strings.HasPrefix(key, prefixStr) {
@@ -231,7 +268,7 @@ func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
 	}
 
 	// 3. Scan active memtable
-	it := idx.currMemtable.data.Iterator()
+	it := idx.currMemtable.DataBlock().Iterator()
 	for it.Next() {
 		key := it.Key()
 		if strings.HasPrefix(key, prefixStr) {
@@ -240,7 +277,7 @@ func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
 	}
 
 	// 4. Resolve references and filter tombstones
-	var refs []RecordRef
+	var refs []storage.RecordRef
 	for _, v := range results {
 		if v != "" {
 			refs = append(refs, unmarshalRef(v))
@@ -250,7 +287,7 @@ func (idx *LSMIndex) Scan(prefix []byte) ([]RecordRef, error) {
 	return refs, nil
 }
 
-func sortSearchKeys(index []IndexEntry, prefix string) int {
+func sortSearchKeys(index []storage.IndexEntry, prefix string) int {
 	low, high := 0, len(index)
 	for low < high {
 		mid := int(uint(low+high) >> 1)
@@ -265,24 +302,24 @@ func sortSearchKeys(index []IndexEntry, prefix string) int {
 
 func (idx *LSMIndex) flushImmutableMemtables() {
 	idx.mu.Lock()
-	mts := make([]*Memtable, len(idx.immutable))
+	mts := make([]*storage.Memtable, len(idx.immutable))
 	copy(mts, idx.immutable)
 	idx.mu.Unlock()
 
-	var newSSTables []*SSTable
-	var flushedMts []*Memtable
+	var newSSTables []*storage.SSTable
+	var flushedMts []*storage.Memtable
 
 	for _, mt := range mts {
 		filename := fmt.Sprintf("%020d.sst", time.Now().UnixNano())
 		sstPath := filepath.Join(idx.sstDir, filename)
 
-		iterator := mt.data.Iterator()
-		if err := WriteSSTable(sstPath, iterator); err != nil {
+		iterator := mt.DataBlock().Iterator()
+		if err := storage.WriteSSTable(sstPath, iterator); err != nil {
 			fmt.Printf("failed to write SSTable: %v\n", err)
 			continue
 		}
 
-		sst, err := OpenSSTable(sstPath)
+		sst, err := storage.OpenSSTable(sstPath)
 		if err != nil {
 			fmt.Printf("failed to open written SSTable: %v\n", err)
 			continue
@@ -298,10 +335,10 @@ func (idx *LSMIndex) flushImmutableMemtables() {
 
 	idx.mu.Lock()
 	for i := len(newSSTables) - 1; i >= 0; i-- {
-		idx.sstables = append([]*SSTable{newSSTables[i]}, idx.sstables...)
+		idx.sstables = append([]*storage.SSTable{newSSTables[i]}, idx.sstables...)
 	}
 
-	var remaining []*Memtable
+	var remaining []*storage.Memtable
 	for _, mt := range idx.immutable {
 		flushed := false
 		for _, fmt := range flushedMts {
@@ -320,7 +357,7 @@ func (idx *LSMIndex) flushImmutableMemtables() {
 	go func() {
 		for _, mt := range flushedMts {
 			mt.Close()
-			walPath := mt.wal.File.Name()
+			walPath := mt.WALFile().File.Name()
 			if err := os.Remove(walPath); err != nil {
 				fmt.Printf("failed to remove WAL file %s: %v\n", walPath, err)
 			}
@@ -347,7 +384,7 @@ func (idx *LSMIndex) runCompaction() {
 		idx.mu.Unlock()
 		return
 	}
-	sstsToCompact := make([]*SSTable, len(idx.sstables))
+	sstsToCompact := make([]*storage.SSTable, len(idx.sstables))
 	copy(sstsToCompact, idx.sstables)
 	idx.mu.Unlock()
 
@@ -364,7 +401,7 @@ func (idx *LSMIndex) runCompaction() {
 		return
 	}
 
-	newSst, err := OpenSSTable(destPath)
+	newSst, err := storage.OpenSSTable(destPath)
 	if err != nil {
 		fmt.Printf("failed to open compacted SSTable: %v\n", err)
 		return
@@ -378,11 +415,11 @@ func (idx *LSMIndex) runCompaction() {
 		return
 	}
 
-	var updatedSSTables []*SSTable
+	var updatedSSTables []*storage.SSTable
 	for _, sst := range idx.sstables {
 		compacted := false
 		for _, csst := range sstsToCompact {
-			if sst.filePath == csst.filePath {
+			if sst.FilePath() == csst.FilePath() {
 				compacted = true
 				break
 			}
@@ -398,14 +435,14 @@ func (idx *LSMIndex) runCompaction() {
 	go func() {
 		for _, sst := range sstsToCompact {
 			sst.Close()
-			if err := os.Remove(sst.filePath); err != nil {
-				fmt.Printf("failed to remove old SSTable %s: %v\n", sst.filePath, err)
+			if err := os.Remove(sst.FilePath()); err != nil {
+				fmt.Printf("failed to remove old SSTable %s: %v\n", sst.FilePath(), err)
 			}
 		}
 	}()
 }
 
-// Close closes all open resources (active/immutable memtables and SSTables).
+// Close closes all open resources.
 func (idx *LSMIndex) Close() error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -435,12 +472,34 @@ func (idx *LSMIndex) Close() error {
 	return firstErr
 }
 
-func mergeSSTables(destPath string, sstables []*SSTable) error {
+func (idx *LSMIndex) Stats() storage.IndexStats {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	var sstFiles []string
+	for _, sst := range idx.sstables {
+		sstFiles = append(sstFiles, filepath.Base(sst.FilePath()))
+	}
+
+	var memSize int64
+	if idx.currMemtable != nil {
+		memSize = idx.currMemtable.Size()
+	}
+
+	return storage.IndexStats{
+		MemtableSize:   memSize,
+		ImmutableCount: len(idx.immutable),
+		SSTableCount:   len(idx.sstables),
+		SSTableFiles:   sstFiles,
+	}
+}
+
+func mergeSSTables(destPath string, sstables []*storage.SSTable) error {
 	if len(sstables) == 0 {
 		return nil
 	}
 
-	iterators := make([]*SSTableIterator, len(sstables))
+	iterators := make([]*storage.SSTableIterator, len(sstables))
 	for i, sst := range sstables {
 		iterators[i] = sst.Iterator()
 		iterators[i].Next() // Prime iterator
@@ -454,7 +513,7 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 	defer file.Close()
 	defer os.Remove(tempPath)
 
-	var index []IndexEntry
+	var index []storage.IndexEntry
 	var offset int64
 
 	for {
@@ -462,7 +521,7 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 		var smallestKey string
 
 		for i, it := range iterators {
-			if it.currIdx >= len(it.sst.index) {
+			if it.CurrIdx() >= len(it.SSTable().IndexBlock()) {
 				continue
 			}
 
@@ -471,7 +530,6 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 				smallestIdx = i
 				smallestKey = key
 			} else if key == smallestKey {
-				// i is newer because sstables slice is ordered newest-first
 				if i < smallestIdx {
 					iterators[smallestIdx].Next()
 					smallestIdx = i
@@ -491,7 +549,6 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 		val := it.Value()
 		it.Next()
 
-		// Reclaim space by discarding tombstones during compaction
 		if val == "" {
 			continue
 		}
@@ -507,7 +564,7 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 			return err
 		}
 
-		index = append(index, IndexEntry{
+		index = append(index, storage.IndexEntry{
 			Key:    key,
 			Offset: offset,
 			ValLen: valLen,
@@ -545,7 +602,7 @@ func mergeSSTables(destPath string, sstables []*SSTable) error {
 	var footer [16]byte
 	binary.BigEndian.PutUint64(footer[0:8], uint64(indexOffset))
 	binary.BigEndian.PutUint32(footer[8:12], uint32(len(index)))
-	binary.BigEndian.PutUint32(footer[12:16], MagicNumber)
+	binary.BigEndian.PutUint32(footer[12:16], storage.MagicNumber)
 
 	if _, err := file.Write(footer[:]); err != nil {
 		return err

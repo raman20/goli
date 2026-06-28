@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/raman20/index/lsm"
 	"github.com/raman20/storage"
 )
 
@@ -16,7 +18,18 @@ func main() {
 	// Set memtable size to 1MB for normal CLI use
 	opts.MemtableSize = 1024 * 1024
 
-	db, err := storage.Open("goli_db", opts)
+	dbPath := filepath.Join(opts.DataDir, "goli_db")
+	walPath := filepath.Join(dbPath, "wal")
+	sstPath := filepath.Join(dbPath, "sst")
+	_ = os.MkdirAll(walPath, 0755)
+	_ = os.MkdirAll(sstPath, 0755)
+
+	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, opts)
+	if err != nil {
+		log.Fatalf("Failed to initialize LSM Index: %v", err)
+	}
+
+	db, err := storage.Open("goli_db", opts, lsmIdx)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

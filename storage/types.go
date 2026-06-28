@@ -32,4 +32,14 @@ type Index interface {
 
 	// Close closes any open file handles or resources held by the index.
 	Close() error
+
+	// Stats returns index-specific metrics.
+	Stats() IndexStats
+}
+
+type IndexStats struct {
+	MemtableSize   int64
+	ImmutableCount int
+	SSTableCount   int
+	SSTableFiles   []string
 }

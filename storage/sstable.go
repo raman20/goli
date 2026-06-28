@@ -204,6 +204,14 @@ func (sst *SSTable) FilePath() string {
 	return sst.filePath
 }
 
+func (sst *SSTable) FileHandle() *os.File {
+	return sst.file
+}
+
+func (sst *SSTable) IndexBlock() []IndexEntry {
+	return sst.index
+}
+
 type SSTableIterator struct {
 	sst     *SSTable
 	currIdx int
@@ -249,4 +257,12 @@ func (it *SSTableIterator) Value() string {
 
 func (it *SSTableIterator) Error() error {
 	return it.err
+}
+
+func (it *SSTableIterator) CurrIdx() int {
+	return it.currIdx
+}
+
+func (it *SSTableIterator) SSTable() *SSTable {
+	return it.sst
 }

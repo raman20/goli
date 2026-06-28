@@ -1,10 +1,14 @@
-package storage
+package storage_test
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/raman20/index/lsm"
+	"github.com/raman20/storage"
 )
 
 func TestDBEndToEnd(t *testing.T) {
@@ -14,14 +18,25 @@ func TestDBEndToEnd(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	opts := Options{
+	opts := storage.Options{
 		MemtableSize:        1024, // Small size to force rapid rotation
 		DataDir:             tmpDir,
 		CompactionThreshold: 3,
 	}
 
+	dbPath := filepath.Join(tmpDir, "test_db")
+	walPath := filepath.Join(dbPath, "wal")
+	sstPath := filepath.Join(dbPath, "sst")
+	os.MkdirAll(walPath, 0755)
+	os.MkdirAll(sstPath, 0755)
+
+	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, opts)
+	if err != nil {
+		t.Fatalf("failed to create LSM index: %v", err)
+	}
+
 	// 1. Open Database
-	db, err := Open("test_db", opts)
+	db, err := storage.Open("test_db", opts, lsmIdx)
 	if err != nil {
 		t.Fatalf("failed to open DB: %v", err)
 	}
@@ -68,7 +83,12 @@ func TestDBEndToEnd(t *testing.T) {
 		t.Fatalf("failed to close db: %v", err)
 	}
 
-	db2, err := Open("test_db", opts)
+	lsmIdx2, err := lsm.NewLSMIndex(walPath, sstPath, opts)
+	if err != nil {
+		t.Fatalf("failed to create LSM index: %v", err)
+	}
+
+	db2, err := storage.Open("test_db", opts, lsmIdx2)
 	if err != nil {
 		t.Fatalf("failed to reopen DB: %v", err)
 	}
@@ -94,12 +114,23 @@ func TestDBScan(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	opts := Options{
+	opts := storage.Options{
 		MemtableSize: 1024 * 1024,
 		DataDir:      tmpDir,
 	}
 
-	db, err := Open("test_scan_db", opts)
+	dbPath := filepath.Join(tmpDir, "test_scan_db")
+	walPath := filepath.Join(dbPath, "wal")
+	sstPath := filepath.Join(dbPath, "sst")
+	os.MkdirAll(walPath, 0755)
+	os.MkdirAll(sstPath, 0755)
+
+	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, opts)
+	if err != nil {
+		t.Fatalf("failed to create LSM index: %v", err)
+	}
+
+	db, err := storage.Open("test_scan_db", opts, lsmIdx)
 	if err != nil {
 		t.Fatalf("failed to open DB: %v", err)
 	}
@@ -145,4 +176,3 @@ func TestDBScan(t *testing.T) {
 		t.Errorf("expected deleted key user:1:age to be excluded from scan")
 	}
 }
-
