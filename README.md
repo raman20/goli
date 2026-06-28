@@ -1,41 +1,30 @@
-# 🚀 Goli: A Log-Structured Merge Tree Database in Go
+# 🚀 Goli: A Unified Storage Engine with Pluggable Indexing
 
-Goli is a high-performance, thread-safe, and durable key-value storage engine implemented in Go. It is built from scratch using the **Log-Structured Merge (LSM) Tree** architecture, optimized for write-heavy workloads while maintaining fast read lookups and range scans.
+Goli is a modular, first-principles database storage engine written in Go. Instead of coupling storage formats to database models, Goli decouples physical byte storage from querying logic. A single, sequential **Unified Storage Core** handles write-ahead logging and raw data persistence, while **Pluggable Indexing Layers (Lenses)** organize search indexes for Key-Value, Vector similarity search, and Streaming/Messaging workloads.
 
 ---
 
-## 🌟 Key Architectural Components
+## 🌟 Core Architectural Pillars
 
-Goli splits your database operations into high-speed memory writes, transactional logging, and sequential segment storage:
+### 🪵 1. Unified Storage Core (Segment Files)
+- **Sequential Append**: The low-level database manager ([segment.go](file:///home/raman/goli/storage/segment.go)) appends raw payload bytes sequentially to disk segments and returns a 16-byte coordinate pointer (**`RecordRef`**).
+- **Zero-Lock Concurrency**: Reads are executed using thread-safe random reads (`ReadAt`) directly from segment files, allowing concurrent queries without lock contention.
+- **Immutability**: Once a segment reaches its limit (e.g. 64MB), it is closed and becomes read-only, making it ready for cloud-tiering.
 
-### 🪵 1. Segment Storage Core
-- **Segment Manager**: The low-level database manager ([segment.go](file:///home/raman/goli/storage/segment.go)) responsible for writing raw byte data sequentially to segment files and returning unique 16-byte coordinates (`RecordRef`).
-- **Pointers-Only Indexes**: Search indexes (like LSM, Vector, or Streaming) never store values directly. They map search keys to a lightweight `RecordRef` (FileID, Offset, Length).
-- **Concurrency**: Leverages thread-safe concurrent file reading (`ReadAt`) to allow multiple readers to query segments simultaneously without locks.
+### 🔌 2. Pluggable Indexing Lenses
+Search indexes never store value payloads directly. Instead, they act as read-only "Lenses" that map query targets (keys, vectors, text tokens) to physical coordinate pointers:
+- **KV Index**: String Key $\rightarrow$ `RecordRef` (LSM Tree / SkipList).
+- **Vector Index**: Float Array $\rightarrow$ `RecordRef` (HNSW Graph).
+- **Streaming Index**: Sequential Offset $\rightarrow$ `RecordRef` (Commit Log).
+- **Full-Text Index**: Token Word $\rightarrow$ List of `RecordRef`s (Inverted Index).
 
-### 🧠 2. Memtable & SkipList
-- **Active Memtable**: All writes (`Set`/`Delete`) are buffered in a thread-safe, memory-resident **SkipList** ([skip-list.go](file:///home/raman/goli/storage/skip-list.go)).
-- **Concurrent-Safe**: Uses fine-grained reader/writer locking ([db.go](file:///home/raman/goli/storage/db.go)) to guarantee safe concurrent reads and writes.
-- **Rotation**: When the active memtable size exceeds `MemtableSize`, it is rotated to an **Immutable Memtable**, and a new active memtable is seamlessly spawned to accept incoming traffic without blocking.
+### ⚡ 3. Native Key-Value Separation (WiscKey)
+By separating the raw value payloads in the segment files (acting as the WiscKey Value Log / Vlog) from the sorted keys in the index ([lsm_index.go](file:///home/raman/goli/storage/lsm_index.go)), Goli eliminates write amplification. Compaction only runs on tiny key-pointer pairs, bypassing all heavy data payloads entirely.
 
-### 📝 3. Transactional Write-Ahead Log (WAL)
-- **ACID Durability**: Every write operation is written to the Write-Ahead Log ([wal.go](file:///home/raman/goli/storage/wal.go)) in transaction batches (`[TX_START]...[Writes]...[TX_COMMIT]`) before updating the memtable, guaranteeing zero data loss on crash.
-- **Crash Recovery**: Replays WAL logs sequentially on startup, replaying only successfully committed transactions and discarding incomplete/aborted writes.
-
-### 💾 4. SSTables (Sorted String Tables)
-- **Disk Persistence**: Background workers flush immutable memtables to disk as Sorted String Tables ([sstable.go](file:///home/raman/goli/storage/sstable.go)).
-- **Efficient Indexing**: Each SSTable contains:
-  - **Data Block**: Sequential sorted key-value pairs.
-  - **Index Block**: Placed at the end of the file, allowing fast in-memory binary searching of keys to identify file offsets.
-  - **Footer**: A fixed-size block containing the offset of the index block and a validation magic number (`0x53535442`).
-
-### ⚙️ 5. Asynchronous K-Way Compaction
-- **Space Reclamation**: Flushed SSTables are compacted asynchronously in the background once the count exceeds `CompactionThreshold`.
-- **K-Way Merge**: Merges overlapping SSTables, keeping only the newest version of duplicate keys and purging tombstones (deleted items) to recover valuable disk space.
-- **Lock-Free IO**: The compaction process runs independently without holding the database lock, ensuring that client reads and writes remain highly responsive.
-
-### 🔍 6. Prefix Range Queries
-- **Cross-Layer Scan**: `DB.Scan(prefix)` traverses the active memtable, immutable memtables, and all loaded SSTable index blocks, merging keys from newest to oldest and filtering out tombstones.
+### ☁️ 4. Polyglot Cloud Storage Tiering (Compute & Storage Separation)
+Goli supports distinct storage systems for indexes and data segments. For example:
+- **`IndexStorage`** can be routed to a low-latency cache or local SSD for microsecond query lookups.
+- **`SegmentStorage`** can be routed directly to cost-efficient cloud object stores (like AWS S3 or MinIO) using HTTP Range gets to fetch raw values on-demand.
 
 ---
 
@@ -43,46 +32,29 @@ Goli splits your database operations into high-speed memory writes, transactiona
 
 ```
                        ┌─────────────────────────┐
-                       │       Client API        │
-                       │   (Get / Set / Delete)  │
+                       │    Client Operations    │
+                       │  (KV, Vector, Streaming)│
                        └────────────┬────────────┘
                                     │
                                     ▼
                       ┌──────────────────────────┐
-                      │     Goli LSM Engine      │
+                      │   Goli Unified Engine    │
                       └──────┬────────────┬──────┘
                              │            │
-             (Append Log)    │            │ (Write Buffer)
+             (Append Log)    │            │ (Save Payload)
                              ▼            ▼
                      ┌───────────┐   ┌───────────────────────────┐
-                     │ Transac-  │   │ Active Memtable           │
-                     │ tional WAL│   │ (In-Memory SkipList)      │
+                     │ Transac-  │   │  Segment Storage Core     │
+                     │ tional WAL│   │   (segment.go / Vlog)     │
                      └───────────┘   └────────────┬──────────────┘
-                                                  │
-                                                  │ (Rotate if full)
+                                                  │ (Returns RecordRef)
                                                   ▼
                                      ┌───────────────────────────┐
-                                     │ Immutable Memtable        │
-                                     │ (Awaiting Flush)          │
-                                     └────────────┬──────────────┘
-                                                  │
-                                                  │ (Background Flush)
-                                                  ▼
-                                     ┌───────────────────────────┐
-                                     │ Sorted String Table (sst) │
-                                     │   ┌───────────────────┐   │
-                                     │   │    Data Block     │   │
-                                     │   ├───────────────────┤   │
-                                     │   │    Index Block    │   │
-                                     │   ├───────────────────┤   │
-                                     │   │    SSTB Footer    │   │
-                                     │   └───────────────────┘   │
-                                     └────────────┬──────────────┘
-                                                  │
-                                                  │ (Compaction Merge)
-                                                  ▼
-                                     ┌───────────────────────────┐
-                                     │  Compacted Single SSTable │
+                                     │ Pluggable Index Lenses    │
+                                     │ ┌───────────────┬───────┐ │
+                                     │ │   LSM Index   │ HNSW  │ │
+                                     │ │  (KV / Cache) │(Vector│ │
+                                     │ └───────────────┴───────┘ │
                                      └───────────────────────────┘
 ```
 
@@ -92,20 +64,22 @@ Goli splits your database operations into high-speed memory writes, transactiona
 
 ```text
 ├── storage/
-│   ├── db.go             # Main database engine lifecycle and compaction coordinator
-│   ├── db_test.go        # End-to-end integration and concurrency tests
-│   ├── skip-list.go      # Thread-safe SkipList data structure
-│   ├── skip_list_test.go # SkipList unit tests (insert, duplicate updates, delete)
-│   ├── sstable.go        # Sorted String Table reader, writer, and iterator
-│   ├── sstable_test.go   # SSTable read/write and binary lookup validation tests
-│   ├── wal.go            # Transactional Write-Ahead Log implementation
-│   ├── wal_test.go       # WAL transaction and crash-recovery tests
-│   ├── segment.go        # Sequential segment storage manager
+│   ├── db.go             # Main database engine orchestrator
+│   ├── db_test.go        # End-to-end database integration tests
+│   ├── segment.go        # Sequential segment storage manager (Vlog)
 │   ├── segment_test.go   # Segment Manager concurrency and rollover tests
-│   └── types.go          # Core data models (RecordRef, Index interface)
+│   ├── types.go          # Core data models (RecordRef, Index interface)
+│   ├── lsm_index.go      # LSM Index implementation (key-coordinate indexing)
+│   ├── lsm_index_test.go # LSM Index point write, read, and delete tests
+│   ├── skip-list.go      # Thread-safe SkipList data structure
+│   ├── skip_list_test.go # SkipList unit tests
+│   ├── sstable.go        # Sorted String Table reader, writer, and index blocks
+│   ├── sstable_test.go   # SSTable read/write and binary lookup tests
+│   ├── wal.go            # Transactional Write-Ahead Log
+│   └── wal_test.go       # WAL transaction and crash-recovery tests
 ├── bin/                  # Compiled executable binaries (ignored by git)
 ├── Makefile              # Project lifecycle script definitions (build, test, run)
-├── main.go               # Interactive LSM KV CLI prompt/REPL script
+├── main.go               # Interactive CLI shell prompt/REPL script
 └── README.md             # Project documentation (you are here)
 ```
 
@@ -113,44 +87,28 @@ Goli splits your database operations into high-speed memory writes, transactiona
 
 ## 🚀 Getting Started
 
-### 📋 Prerequisites
-Ensure you have **Go 1.23+** installed on your machine.
-
-### 🔨 Installation & Tests
-Clone the repository and run the test suite to verify the integrity of the storage engine:
+### 🔨 Run all Tests
+Validate the integrity of the storage, indexing, WAL, and compaction layers:
 ```bash
-# Run all tests (SkipList, WAL, SSTables, Segments, DB, Compaction)
 make test
 ```
 
-### 💻 Run the Interactive Database Shell (CLI)
-Compile and run the interactive CLI:
+### 💻 Run the Interactive Database Shell
+Compile and run the interactive CLI shell:
 ```bash
-# Compile and start the interactive database shell
 make run
 ```
-This opens the Goli interactive prompt (`goli> `). You can execute the following database operations:
+This opens the Goli interactive prompt (`goli> `). You can execute:
 * `set <key> <value>`: Store a key-value pair.
 * `get <key>`: Retrieve the value of a key.
 * `delete <key>`: Delete a key (writes a tombstone).
 * `scan <prefix>`: Scan and list all keys matching the prefix.
-* `stats`: Show engine metrics (active memtable size, counts of files).
+* `stats`: Show engine metrics.
 * `exit` / `quit`: Safely exit the database shell.
-
-You can also run one-off CLI commands directly:
-```bash
-# Example: write a key
-./bin/goli set app_version 1.0.0
-
-# Example: read stats
-./bin/goli stats
-```
 
 ---
 
-## 💡 Quick Code Example
-
-Here is how to integrate Goli into your Go applications:
+## 💡 Quick Go Integration Code Example
 
 ```go
 package main
@@ -163,45 +121,24 @@ import (
 )
 
 func main() {
-	// 1. Initialize Default Database Options
 	opts := storage.DefaultOptions()
-	opts.DataDir = "my_data_directory"
-	opts.MemtableSize = 4 * 1024 * 1024 // 4MB
-	opts.CompactionThreshold = 4
+	opts.DataDir = "my_data"
 
-	// 2. Open Goli DB Instance
+	// Open Goli DB instance
 	db, err := storage.Open("user_store", opts)
 	if err != nil {
 		log.Fatalf("Failed to open Goli: %v", err)
 	}
-	defer db.Close() // Safely flushes buffers & closes active logs
+	defer db.Close()
 
-	// 3. Write Keys
-	if err := db.Set("user:100:profile", `{"name":"Raman","age":30}`); err != nil {
+	// Write key (Payload stored in segment file, RecordRef mapped in LSMIndex)
+	if err := db.Set("user:100:profile", `{"name":"Raman"}`); err != nil {
 		log.Fatalf("Set failed: %v", err)
 	}
 
-	// 4. Read Keys
+	// Read key (Queries coordinates from LSMIndex, reads value from segment file)
 	if val, ok := db.Get("user:100:profile"); ok {
 		fmt.Printf("User Profile: %s\n", val)
-	} else {
-		fmt.Println("User Profile not found!")
 	}
-
-	// 5. Scan Range by Prefix
-	results, err := db.Scan("user:")
-	if err == nil {
-		for key, val := range results {
-			fmt.Printf("Found: %s -> %s\n", key, val)
-		}
-	}
-
-	// 6. Delete Key (Writes a Tombstone)
-	db.Delete("user:100:profile")
 }
 ```
-
----
-
-## 📝 License
-Goli is distributed under the **MIT License**. Feel free to use it in your personal or commercial applications!
