@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -19,7 +20,7 @@ var (
 type DB struct {
 	Name       string
 	segmentMgr *SegmentManager
-	index      Index
+	indexes    map[string]Index // Index catalog (e.g. "primary" -> LSMIndex, "vector" -> HNSWIndex)
 	closed     bool
 	closeOnce  sync.Once
 	options    Options
@@ -47,7 +48,7 @@ func DefaultOptions() Options {
 	}
 }
 
-func Open(name string, opts Options, index Index) (*DB, error) {
+func Open(name string, opts Options, primary Index) (*DB, error) {
 	if name == "" {
 		return nil, ErrKeyEmpty
 	}
@@ -77,8 +78,10 @@ func Open(name string, opts Options, index Index) (*DB, error) {
 		sstDir:     sstPath,
 		segmentDir: segmentPath,
 		segmentMgr: sm,
-		index:      index,
+		indexes:    make(map[string]Index),
 	}
+
+	db.indexes["primary"] = primary
 
 	return db, nil
 }
@@ -109,6 +112,70 @@ func decodeValue(record []byte) string {
 	return unsafe.String(&record[8+keyLen], valLen)
 }
 
+func (db *DB) RegisterIndex(name string, idx Index) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	db.indexes[name] = idx
+}
+
+func (db *DB) GetIndex(name string) (Index, bool) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	idx, exists := db.indexes[name]
+	return idx, exists
+}
+
+// GetOrInitIndex returns an existing index or initializes it lazily on demand.
+func (db *DB) GetOrInitIndex(name string, initFn func() Index) Index {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if idx, exists := db.indexes[name]; exists {
+		return idx
+	}
+
+	idx := initFn()
+	db.indexes[name] = idx
+	return idx
+}
+
+// InsertVector writes a vector record directly using the composite key, and indexes it in LSM & HNSW.
+func (db *DB) InsertVector(compositeKey []byte, payload string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if db.closed {
+		return ErrDBClosed
+	}
+
+	// 1. Write payload to segment storage
+	record := encodeRecord(string(compositeKey), payload)
+	ref, err := db.segmentMgr.Append(record)
+	if err != nil {
+		return fmt.Errorf("failed to append to SegmentManager: %w", err)
+	}
+
+	// 2. Put in the vector index (if registered/loaded)
+	if vecIdx, exists := db.indexes["vector"]; exists {
+		if err := vecIdx.Put(compositeKey, ref); err != nil {
+			return err
+		}
+	}
+
+	// 3. Extract simple ID from first 4 bytes of compositeKey and index in LSM primary tree
+	if len(compositeKey) >= 4 {
+		idLen := binary.BigEndian.Uint32(compositeKey[0:4])
+		if len(compositeKey) >= int(4+idLen) {
+			id := compositeKey[4 : 4+idLen]
+			if primary, exists := db.indexes["primary"]; exists {
+				primary.Put(id, ref)
+			}
+		}
+	}
+
+	return nil
+}
+
 func (db *DB) Set(key string, value string) error {
 	if key == "" {
 		return ErrKeyEmpty
@@ -128,8 +195,8 @@ func (db *DB) Set(key string, value string) error {
 		return fmt.Errorf("failed to append to SegmentManager: %w", err)
 	}
 
-	// 2. Map Key -> RecordRef in the index
-	return db.index.Put([]byte(key), ref)
+	// 2. Map Key -> RecordRef in the primary index
+	return db.indexes["primary"].Put([]byte(key), ref)
 }
 
 func (db *DB) Get(key string) (string, bool) {
@@ -144,8 +211,8 @@ func (db *DB) Get(key string) (string, bool) {
 		return "", false
 	}
 
-	// 1. Query index for coordinate
-	ref, found, err := db.index.Get([]byte(key))
+	// 1. Query primary index for coordinate
+	ref, found, err := db.indexes["primary"].Get([]byte(key))
 	if err != nil || !found {
 		return "", false
 	}
@@ -167,7 +234,16 @@ func (db *DB) Delete(key string) error {
 		return ErrDBClosed
 	}
 
-	return db.index.Delete([]byte(key))
+	var firstErr error
+	for _, idx := range db.indexes {
+		if err := idx.Delete([]byte(key)); err != nil && firstErr == nil {
+			if !strings.Contains(err.Error(), "not supported") {
+				firstErr = err
+			}
+		}
+	}
+
+	return firstErr
 }
 
 func (db *DB) Scan(prefix string) (map[string]string, error) {
@@ -178,8 +254,8 @@ func (db *DB) Scan(prefix string) (map[string]string, error) {
 		return nil, ErrDBClosed
 	}
 
-	// 1. Query index for matching RecordRefs
-	refs, err := db.index.Scan([]byte(prefix))
+	// 1. Query primary index for matching RecordRefs
+	refs, err := db.indexes["primary"].Scan([]byte(prefix))
 	if err != nil {
 		return nil, err
 	}
@@ -216,8 +292,10 @@ func (db *DB) Close() error {
 
 		db.closed = true
 
-		if err := db.index.Close(); err != nil {
-			firstErr = fmt.Errorf("failed to close Index: %w", err)
+		for name, idx := range db.indexes {
+			if err := idx.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to close index %s: %w", name, err)
+			}
 		}
 
 		if err := db.segmentMgr.Close(); err != nil && firstErr == nil {
@@ -238,7 +316,10 @@ func (db *DB) Stats() DBStats {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	istats := db.index.Stats()
+	var istats IndexStats
+	if primary, exists := db.indexes["primary"]; exists {
+		istats = primary.Stats()
+	}
 
 	return DBStats{
 		MemtableSize:   istats.MemtableSize,
@@ -246,4 +327,19 @@ func (db *DB) Stats() DBStats {
 		SSTableCount:   istats.SSTableCount,
 		SSTableFiles:   istats.SSTableFiles,
 	}
+}
+
+func (db *DB) ReadRecord(ref RecordRef) (string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if db.closed {
+		return "", ErrDBClosed
+	}
+
+	record, err := db.segmentMgr.Read(ref)
+	if err != nil {
+		return "", err
+	}
+	return decodeValue(record), nil
 }

@@ -6,67 +6,210 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/raman20/index/hnsw"
 	"github.com/raman20/index/lsm"
 	"github.com/raman20/storage"
 )
 
+type MultiModelDB struct {
+	opts        storage.Options
+	activeName  string
+	collections map[string]bool
+	openedDBs   map[string]*storage.DB
+	openedLSMs  map[string]*lsm.LSMIndex
+	openedHNSWs map[string]*hnsw.HNSWIndex
+}
+
 func main() {
 	opts := storage.DefaultOptions()
 	opts.DataDir = "data"
-	// Set memtable size to 1MB for normal CLI use
-	opts.MemtableSize = 1024 * 1024
+	opts.MemtableSize = 1024 * 1024 // 1MB
 
-	dbPath := filepath.Join(opts.DataDir, "goli_db")
-	walPath := filepath.Join(dbPath, "wal")
-	sstPath := filepath.Join(dbPath, "sst")
-	_ = os.MkdirAll(walPath, 0755)
-	_ = os.MkdirAll(sstPath, 0755)
-
-	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, opts)
-	if err != nil {
-		log.Fatalf("Failed to initialize LSM Index: %v", err)
+	mmDB := &MultiModelDB{
+		opts:        opts,
+		collections: make(map[string]bool),
+		openedDBs:   make(map[string]*storage.DB),
+		openedLSMs:  make(map[string]*lsm.LSMIndex),
+		openedHNSWs: make(map[string]*hnsw.HNSWIndex),
 	}
 
-	db, err := storage.Open("goli_db", opts, lsmIdx)
-	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+	// Dynamic Collection Auto-Discovery
+	if err := mmDB.discoverCollections(); err != nil {
+		log.Fatalf("Failed to discover collections: %v", err)
 	}
-	defer db.Close()
 
-	// If arguments are provided, run as single-shot CLI command
+	// Close all connection pools on exit
+	defer mmDB.Close()
+
 	if len(os.Args) > 1 {
-		runSingleCommand(db, os.Args[1:])
+		runSingleCommand(mmDB, os.Args[1:])
 		return
 	}
 
-	// Otherwise, start interactive REPL shell
-	runREPL(db)
+	runREPL(mmDB)
 }
 
-func runSingleCommand(db *storage.DB, args []string) {
+func (m *MultiModelDB) discoverCollections() error {
+	colsDir := filepath.Join(m.opts.DataDir, "collections")
+	_ = os.MkdirAll(colsDir, 0755)
+
+	entries, err := os.ReadDir(colsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			m.collections[entry.Name()] = true
+		}
+	}
+
+	// If no collections found, default to default_kv
+	if len(m.collections) == 0 {
+		m.collections["default_kv"] = true
+	}
+
+	// Set default active collection to the first discovered one
+	for name := range m.collections {
+		m.activeName = name
+		break
+	}
+
+	return nil
+}
+
+func (m *MultiModelDB) GetActiveDB() (*storage.DB, *lsm.LSMIndex, *hnsw.HNSWIndex, error) {
+	if db, exists := m.openedDBs[m.activeName]; exists {
+		return db, m.openedLSMs[m.activeName], m.openedHNSWs[m.activeName], nil
+	}
+
+	// Initialize collection storage paths
+	colPath := filepath.Join(m.opts.DataDir, "collections", m.activeName)
+	walPath := filepath.Join(colPath, "wal")
+	sstPath := filepath.Join(colPath, "sst")
+	_ = os.MkdirAll(walPath, 0755)
+	_ = os.MkdirAll(sstPath, 0755)
+
+	dbOpts := m.opts
+	dbOpts.DataDir = colPath
+
+	// All Goli collections use LSMIndex as their primary index for key/ID mapping
+	lsmIdx, err := lsm.NewLSMIndex(walPath, sstPath, dbOpts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	db, err := storage.Open(m.activeName, dbOpts, lsmIdx)
+	if err != nil {
+		lsmIdx.Close()
+		return nil, nil, nil, err
+	}
+
+	m.openedDBs[m.activeName] = db
+	m.openedLSMs[m.activeName] = lsmIdx
+	m.openedHNSWs[m.activeName] = nil // Lazy-loaded on demand
+
+	return db, lsmIdx, nil, nil
+}
+
+func (m *MultiModelDB) Close() {
+	for _, db := range m.openedDBs {
+		db.Close()
+	}
+}
+
+func parseVector(vecStr string) ([]float32, error) {
+	parts := strings.Split(vecStr, ",")
+	vec := make([]float32, len(parts))
+	for i, p := range parts {
+		var val float32
+		_, err := fmt.Sscanf(strings.TrimSpace(p), "%f", &val)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse float %q: %w", p, err)
+		}
+		vec[i] = val
+	}
+	return vec, nil
+}
+
+func runSingleCommand(db *MultiModelDB, args []string) {
 	cmd := strings.ToLower(args[0])
+
+	switch cmd {
+	case "collection":
+		if len(args) < 2 {
+			fmt.Println("Usage: goli collection create <name> | collection list")
+			return
+		}
+		subCmd := strings.ToLower(args[1])
+
+		if subCmd == "create" {
+			if len(args) < 3 {
+				fmt.Println("Usage: goli collection create <name>")
+				return
+			}
+			name := args[2]
+			colPath := filepath.Join(db.opts.DataDir, "collections", name)
+			_ = os.MkdirAll(colPath, 0755)
+			db.collections[name] = true
+			fmt.Println("OK")
+			return
+
+		} else if subCmd == "list" {
+			for name := range db.collections {
+				activeMarker := " "
+				if name == db.activeName {
+					activeMarker = "*"
+				}
+				fmt.Printf("%s %s\n", activeMarker, name)
+			}
+			return
+		}
+
+	case "use":
+		if len(args) < 2 {
+			fmt.Println("Usage: goli use <collection_name>")
+			return
+		}
+		name := args[1]
+		if !db.collections[name] {
+			fmt.Printf("Error: collection %q does not exist\n", name)
+			return
+		}
+		db.activeName = name
+		fmt.Printf("Switched to collection %q\n", name)
+		return
+	}
+
+	kvDB, _, _, err := db.GetActiveDB()
+	if err != nil {
+		fmt.Printf("Error opening collection %s: %v\n", db.activeName, err)
+		return
+	}
+
 	switch cmd {
 	case "set", "put":
 		if len(args) < 3 {
 			fmt.Println("Usage: goli set <key> <value>")
-			os.Exit(1)
+			return
 		}
 		key := args[1]
 		val := strings.Join(args[2:], " ")
-		if err := db.Set(key, val); err != nil {
+		if err := kvDB.Set(key, val); err != nil {
 			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		fmt.Println("OK")
 
 	case "get":
 		if len(args) < 2 {
 			fmt.Println("Usage: goli get <key>")
-			os.Exit(1)
+			return
 		}
-		val, ok := db.Get(args[1])
+		val, ok := kvDB.Get(args[1])
 		if !ok {
 			fmt.Println("(nil)")
 		} else {
@@ -76,23 +219,23 @@ func runSingleCommand(db *storage.DB, args []string) {
 	case "del", "delete":
 		if len(args) < 2 {
 			fmt.Println("Usage: goli delete <key>")
-			os.Exit(1)
+			return
 		}
-		if err := db.Delete(args[1]); err != nil {
+		if err := kvDB.Delete(args[1]); err != nil {
 			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		fmt.Println("OK")
 
 	case "scan":
 		if len(args) < 2 {
 			fmt.Println("Usage: goli scan <prefix>")
-			os.Exit(1)
+			return
 		}
-		results, err := db.Scan(args[1])
+		results, err := kvDB.Scan(args[1])
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			return
 		}
 		if len(results) == 0 {
 			fmt.Println("(empty)")
@@ -103,31 +246,103 @@ func runSingleCommand(db *storage.DB, args []string) {
 		}
 
 	case "stats":
-		stats := db.Stats()
+		stats := kvDB.Stats()
 		fmt.Printf("Active Memtable Size:     %d bytes\n", stats.MemtableSize)
 		fmt.Printf("Immutable Memtable Count: %d\n", stats.ImmutableCount)
 		fmt.Printf("SSTable File Count:       %d\n", stats.SSTableCount)
-		if len(stats.SSTableFiles) > 0 {
-			fmt.Printf("SSTable Files:\n")
-			for _, file := range stats.SSTableFiles {
-				fmt.Printf("  - %s\n", file)
-			}
+
+	case "vset":
+		if len(args) < 4 {
+			fmt.Println("Usage: goli vset <id> <vector_csv> <metadata_value>")
+			return
+		}
+		id := args[1]
+		vec, err := parseVector(args[2])
+		if err != nil {
+			fmt.Printf("Error parsing vector: %v\n", err)
+			return
+		}
+		metadata := strings.Join(args[3:], " ")
+
+		// Lazy initialize the HNSW vector index on the first write
+		_ = kvDB.GetOrInitIndex("vector", func() storage.Index {
+			hnswIdx := hnsw.NewHNSWIndex(hnsw.Cosine, 16, 64, 32)
+			db.openedHNSWs[db.activeName] = hnswIdx
+			return hnswIdx
+		})
+
+		compositeKey := hnsw.EncodeKey(id, vec)
+		if err := kvDB.InsertVector(compositeKey, metadata); err != nil {
+			fmt.Printf("Error writing payload: %v\n", err)
+			return
+		}
+		fmt.Println("OK")
+
+	case "vsearch":
+		if len(args) < 3 {
+			fmt.Println("Usage: goli vsearch <vector_csv> <k>")
+			return
+		}
+		vec, err := parseVector(args[1])
+		if err != nil {
+			fmt.Printf("Error parsing vector: %v\n", err)
+			return
+		}
+		k, err := strconv.Atoi(args[2])
+		if err != nil {
+			fmt.Printf("Invalid k: %v\n", err)
+			return
 		}
 
+		idx, exists := kvDB.GetIndex("vector")
+		if !exists {
+			fmt.Println("(empty - no vectors indexed yet)")
+			return
+		}
+		hnswIdx := idx.(*hnsw.HNSWIndex)
+
+		refs, distances, err := hnswIdx.Search(vec, k)
+		if err != nil {
+			fmt.Printf("Vector search error: %v\n", err)
+			return
+		}
+
+		if len(refs) == 0 {
+			fmt.Println("(empty)")
+			return
+		}
+
+		for i, ref := range refs {
+			payload, err := kvDB.ReadRecord(ref)
+			if err != nil {
+				payload = fmt.Sprintf("(failed to read payload: %v)", err)
+			}
+			fmt.Printf("Result %d: Distance=%f | Metadata=%s\n", i+1, distances[i], payload)
+		}
+
+	case "vstats":
+		idx, exists := kvDB.GetIndex("vector")
+		if !exists {
+			fmt.Println("HNSW Indexed Vectors: 0")
+			return
+		}
+		hnswIdx := idx.(*hnsw.HNSWIndex)
+		stats := hnswIdx.Stats()
+		fmt.Printf("HNSW Indexed Vectors: %d\n", stats.MemtableSize)
+
 	default:
-		fmt.Printf("Unknown command: %s. Supported: set, get, delete, scan, stats\n", cmd)
-		os.Exit(1)
+		fmt.Printf("Unknown command: %s. Supported: set, get, delete, scan, stats, vset, vsearch, vstats, collection, use\n", cmd)
 	}
 }
 
-func runREPL(db *storage.DB) {
-	fmt.Println("🚀 Welcome to the Goli LSM Database Interactive Shell")
+func runREPL(db *MultiModelDB) {
+	fmt.Println("🚀 Welcome to the Goli Multi-Model Database Shell")
 	fmt.Println("Type \"help\" for list of commands, \"exit\" or \"quit\" to quit.")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print("goli> ")
+		fmt.Printf("goli[%s]> ", db.activeName)
 		if !scanner.Scan() {
 			break
 		}
@@ -146,12 +361,18 @@ func runREPL(db *storage.DB) {
 
 		if cmd == "help" {
 			fmt.Println("Available commands:")
-			fmt.Println("  set <key> <value>   - Store a key-value pair")
-			fmt.Println("  get <key>           - Retrieve value for a key")
-			fmt.Println("  delete <key>        - Delete a key")
-			fmt.Println("  scan <prefix>       - List keys matching a prefix")
-			fmt.Println("  stats               - Show engine metrics")
-			fmt.Println("  exit / quit         - Exit the shell")
+			fmt.Println("  collection create <name>           - Create a collection")
+			fmt.Println("  collection list                    - List all collections")
+			fmt.Println("  use <collection_name>              - Switch the active collection")
+			fmt.Println("  set <key> <value>                  - Store a KV entry")
+			fmt.Println("  get <key>                          - Retrieve a KV entry (works on vector metadata too!)")
+			fmt.Println("  delete <key>                       - Delete a KV entry (removes from all indexes!)")
+			fmt.Println("  scan <prefix>                      - Scan KV by prefix")
+			fmt.Println("  stats                              - Show active collection engine metrics")
+			fmt.Println("  vset <id> <vector> <val>           - Insert vector node (auto-activates HNSW graph)")
+			fmt.Println("  vsearch <vector> <k>               - Search nearest vectors (only if vectors indexed)")
+			fmt.Println("  vstats                             - Show HNSW vector index metrics")
+			fmt.Println("  exit / quit                        - Exit the shell")
 			continue
 		}
 
