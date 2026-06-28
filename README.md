@@ -6,31 +6,35 @@ Goli is a high-performance, thread-safe, and durable key-value storage engine im
 
 ## 🌟 Key Architectural Components
 
-Goli splits your database operations into high-speed memory writes and sequential background disk IO:
+Goli splits your database operations into high-speed memory writes, transactional logging, and sequential segment storage:
 
-### 🧠 1. Memtable & SkipList
+### 🪵 1. Segment Storage Core
+- **Segment Manager**: The low-level database manager ([segment.go](file:///home/raman/goli/storage/segment.go)) responsible for writing raw byte data sequentially to segment files and returning unique 16-byte coordinates (`RecordRef`).
+- **Pointers-Only Indexes**: Search indexes (like LSM, Vector, or Streaming) never store values directly. They map search keys to a lightweight `RecordRef` (FileID, Offset, Length).
+- **Concurrency**: Leverages thread-safe concurrent file reading (`ReadAt`) to allow multiple readers to query segments simultaneously without locks.
+
+### 🧠 2. Memtable & SkipList
 - **Active Memtable**: All writes (`Set`/`Delete`) are buffered in a thread-safe, memory-resident **SkipList** ([skip-list.go](file:///home/raman/goli/storage/skip-list.go)).
 - **Concurrent-Safe**: Uses fine-grained reader/writer locking ([db.go](file:///home/raman/goli/storage/db.go)) to guarantee safe concurrent reads and writes.
 - **Rotation**: When the active memtable size exceeds `MemtableSize`, it is rotated to an **Immutable Memtable**, and a new active memtable is seamlessly spawned to accept incoming traffic without blocking.
 
-### 📝 2. Write-Ahead Log (WAL)
-- **Durability**: Every write is appended to a Write-Ahead Log ([wal.go](file:///home/raman/goli/storage/wal.go)) before updating the memtable, guaranteeing zero data loss in the event of a crash.
-- **Binary-Safe Encoding**: Uses a robust length-prefixed binary format `[Key Length (4B)][Value Length (4B)][Key Bytes][Value Bytes]` allowing any arbitrary characters, binary payload data, colons, or newlines to be stored safely.
-- **Crash Recovery**: On startup, Goli scans the WAL directory, replays un-flushed writes, and restores the database state.
+### 📝 3. Transactional Write-Ahead Log (WAL)
+- **ACID Durability**: Every write operation is written to the Write-Ahead Log ([wal.go](file:///home/raman/goli/storage/wal.go)) in transaction batches (`[TX_START]...[Writes]...[TX_COMMIT]`) before updating the memtable, guaranteeing zero data loss on crash.
+- **Crash Recovery**: Replays WAL logs sequentially on startup, replaying only successfully committed transactions and discarding incomplete/aborted writes.
 
-### 💾 3. SSTables (Sorted String Tables)
+### 💾 4. SSTables (Sorted String Tables)
 - **Disk Persistence**: Background workers flush immutable memtables to disk as Sorted String Tables ([sstable.go](file:///home/raman/goli/storage/sstable.go)).
 - **Efficient Indexing**: Each SSTable contains:
   - **Data Block**: Sequential sorted key-value pairs.
   - **Index Block**: Placed at the end of the file, allowing fast in-memory binary searching of keys to identify file offsets.
   - **Footer**: A fixed-size block containing the offset of the index block and a validation magic number (`0x53535442`).
 
-### ⚙️ 4. Asynchronous K-Way Compaction
+### ⚙️ 5. Asynchronous K-Way Compaction
 - **Space Reclamation**: Flushed SSTables are compacted asynchronously in the background once the count exceeds `CompactionThreshold`.
 - **K-Way Merge**: Merges overlapping SSTables, keeping only the newest version of duplicate keys and purging tombstones (deleted items) to recover valuable disk space.
 - **Lock-Free IO**: The compaction process runs independently without holding the database lock, ensuring that client reads and writes remain highly responsive.
 
-### 🔍 5. Prefix Range Queries
+### 🔍 6. Prefix Range Queries
 - **Cross-Layer Scan**: `DB.Scan(prefix)` traverses the active memtable, immutable memtables, and all loaded SSTable index blocks, merging keys from newest to oldest and filtering out tombstones.
 
 ---
@@ -51,10 +55,10 @@ Goli splits your database operations into high-speed memory writes and sequentia
              (Append Log)    │            │ (Write Buffer)
                              ▼            ▼
                      ┌───────────┐   ┌───────────────────────────┐
-                     │ Write-    │   │ Active Memtable           │
-                     │ Ahead Log │   │ (In-Memory SkipList)      │
-                     │ (WAL)     │   └────────────┬──────────────┘
-                     └───────────┘                │
+                     │ Transac-  │   │ Active Memtable           │
+                     │ tional WAL│   │ (In-Memory SkipList)      │
+                     └───────────┘   └────────────┬──────────────┘
+                                                  │
                                                   │ (Rotate if full)
                                                   ▼
                                      ┌───────────────────────────┐
@@ -94,11 +98,14 @@ Goli splits your database operations into high-speed memory writes and sequentia
 │   ├── skip_list_test.go # SkipList unit tests (insert, duplicate updates, delete)
 │   ├── sstable.go        # Sorted String Table reader, writer, and iterator
 │   ├── sstable_test.go   # SSTable read/write and binary lookup validation tests
-│   ├── wal.go            # Binary-safe Write-Ahead Log implementation
-│   └── wal_test.go       # WAL recovery and binary-safety tests
+│   ├── wal.go            # Transactional Write-Ahead Log implementation
+│   ├── wal_test.go       # WAL transaction and crash-recovery tests
+│   ├── segment.go        # Sequential segment storage manager
+│   ├── segment_test.go   # Segment Manager concurrency and rollover tests
+│   └── types.go          # Core data models (RecordRef, Index interface)
 ├── bin/                  # Compiled executable binaries (ignored by git)
 ├── Makefile              # Project lifecycle script definitions (build, test, run)
-├── main.go               # Interactive LSM KV CLI demonstration script
+├── main.go               # Interactive LSM KV CLI prompt/REPL script
 └── README.md             # Project documentation (you are here)
 ```
 
@@ -112,7 +119,7 @@ Ensure you have **Go 1.23+** installed on your machine.
 ### 🔨 Installation & Tests
 Clone the repository and run the test suite to verify the integrity of the storage engine:
 ```bash
-# Run all tests (SkipList, WAL, SSTables, DB, Compaction)
+# Run all tests (SkipList, WAL, SSTables, Segments, DB, Compaction)
 make test
 ```
 

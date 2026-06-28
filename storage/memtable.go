@@ -41,8 +41,12 @@ func InitMemtable(walPath string, maxSize int64) (*Memtable, error) {
 	skl := InitSL(0.5, 16)
 
 	// Replay WAL entries
-	for k, v := range entries {
-		skl.Put(k, v)
+	for _, op := range entries {
+		if op.Delete {
+			skl.Put(op.Key, "") // Replay delete as tombstone
+		} else {
+			skl.Put(op.Key, op.Value)
+		}
 	}
 
 	return &Memtable{
@@ -66,8 +70,14 @@ func (m *Memtable) Set(key, value string) error {
 		return ErrMemtableFull
 	}
 
-	if err := m.wal.Entry(key, value); err != nil {
-		return fmt.Errorf("failed to write to WAL: %w", err)
+	if err := m.wal.WriteTxStart(0); err != nil {
+		return fmt.Errorf("failed to write WAL start: %w", err)
+	}
+	if err := m.wal.WriteTxSet(0, key, value); err != nil {
+		return fmt.Errorf("failed to write WAL set: %w", err)
+	}
+	if err := m.wal.WriteTxCommit(0); err != nil {
+		return fmt.Errorf("failed to write WAL commit: %w", err)
 	}
 
 	m.data.Put(key, value)
@@ -88,7 +98,32 @@ func (m *Memtable) Get(key string) (string, bool) {
 }
 
 func (m *Memtable) Delete(key string) error {
-	return m.Set(key, "") // Tombstone
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return ErrMemtableClosed
+	}
+
+	newSize := m.size + int64(len(key))
+	if newSize > m.maxSize {
+		return ErrMemtableFull
+	}
+
+	if err := m.wal.WriteTxStart(0); err != nil {
+		return fmt.Errorf("failed to write WAL start: %w", err)
+	}
+	if err := m.wal.WriteTxDelete(0, key); err != nil {
+		return fmt.Errorf("failed to write WAL delete: %w", err)
+	}
+	if err := m.wal.WriteTxCommit(0); err != nil {
+		return fmt.Errorf("failed to write WAL commit: %w", err)
+	}
+
+	m.data.Put(key, "") // Put empty string tombstone
+	m.size = newSize
+
+	return nil
 }
 
 func (m *Memtable) Close() error {
@@ -109,5 +144,3 @@ func (m *Memtable) Size() int64 {
 	defer m.mu.RUnlock()
 	return m.size
 }
-
-// func Flush()  {}
