@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/google/uuid"
 )
@@ -78,18 +79,21 @@ func marshalRef(ref RecordRef) string {
 	binary.BigEndian.PutUint32(buf[0:4], ref.FileID)
 	binary.BigEndian.PutUint64(buf[4:12], uint64(ref.Offset))
 	binary.BigEndian.PutUint32(buf[12:16], ref.Length)
-	return string(buf)
+	return unsafe.String(&buf[0], 16)
 }
 
 func unmarshalRef(data string) RecordRef {
-	buf := []byte(data)
-	if len(buf) < 16 {
+	if len(data) < 16 {
 		return RecordRef{}
 	}
+	fileID := uint32(data[0])<<24 | uint32(data[1])<<16 | uint32(data[2])<<8 | uint32(data[3])
+	offset := int64(data[4])<<56 | int64(data[5])<<48 | int64(data[6])<<40 | int64(data[7])<<32 |
+		int64(data[8])<<24 | int64(data[9])<<16 | int64(data[10])<<8 | int64(data[11])
+	length := uint32(data[12])<<24 | uint32(data[13])<<16 | uint32(data[14])<<8 | uint32(data[15])
 	return RecordRef{
-		FileID: binary.BigEndian.Uint32(buf[0:4]),
-		Offset: int64(binary.BigEndian.Uint64(buf[4:12])),
-		Length: binary.BigEndian.Uint32(buf[12:16]),
+		FileID: fileID,
+		Offset: offset,
+		Length: length,
 	}
 }
 

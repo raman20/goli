@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"sync"
+	"unsafe"
 )
 
 var (
@@ -147,7 +148,10 @@ func decodeValue(record []byte) string {
 	if int(8+keyLen+valLen) > len(record) {
 		return ""
 	}
-	return string(record[8+keyLen : 8+keyLen+valLen])
+	if valLen == 0 {
+		return ""
+	}
+	return unsafe.String(&record[8+keyLen], valLen)
 }
 
 func (db *DB) Set(key string, value string) error {
@@ -235,8 +239,14 @@ func (db *DB) Scan(prefix string) (map[string]string, error) {
 
 		keyLen := binary.BigEndian.Uint32(record[0:4])
 		valLen := binary.BigEndian.Uint32(record[4:8])
-		k := string(record[8 : 8+keyLen])
-		v := string(record[8+keyLen : 8+keyLen+valLen])
+		
+		var k, v string
+		if keyLen > 0 {
+			k = unsafe.String(&record[8], keyLen)
+		}
+		if valLen > 0 {
+			v = unsafe.String(&record[8+keyLen], valLen)
+		}
 		results[k] = v
 	}
 
