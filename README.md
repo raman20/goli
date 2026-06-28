@@ -1,6 +1,6 @@
 # 🚀 Goli: A Unified Storage Engine with Pluggable Indexing
 
-Goli is a modular, first-principles database storage engine written in Go. Instead of coupling storage formats to database models, Goli decouples physical byte storage from querying logic. A single, sequential **Unified Storage Core** handles write-ahead logging and raw data persistence, while **Pluggable Indexing Layers (Lenses)** organize search indexes for Key-Value, Vector similarity search, and Streaming/Messaging workloads.
+Goli is a modular, first-principles database storage engine written in Go. Instead of coupling storage formats to database models, Goli decouples physical byte storage from querying logic. A single, sequential **Unified Storage Core** handles write-ahead logging and raw data persistence, while **Pluggable Indexing Layers (Lenses)** organize search indexes for Key-Value, Vector similarity search, Streaming/Messaging workloads (anything) etc.
 
 ---
 
