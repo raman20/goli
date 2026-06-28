@@ -29,4 +29,7 @@ type Index interface {
 
 	// Scan returns all RecordRefs whose keys match the given prefix.
 	Scan(prefix []byte) ([]RecordRef, error)
+
+	// Close closes any open file handles or resources held by the index.
+	Close() error
 }
