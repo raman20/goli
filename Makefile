@@ -1,5 +1,6 @@
 build:
-	go build -o bin/goli main.go
+	go build -o bin/goli cmd/goli/main.go
+
 
 run: build
 	./bin/goli
