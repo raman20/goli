@@ -1,4 +1,4 @@
-package storage
+package lsm
 
 import (
 	"encoding/binary"

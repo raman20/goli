@@ -1,9 +1,11 @@
-package storage
+package lsm
 
 import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/raman20/storage"
 )
 
 var (
@@ -12,7 +14,7 @@ var (
 )
 
 type Memtable struct {
-	wal       *WAL
+	wal       *storage.WAL
 	data      *SkipList
 	mu        sync.RWMutex
 	size      int64 // Track size for flush decisions
@@ -26,7 +28,7 @@ func InitMemtable(walPath string, maxSize int64) (*Memtable, error) {
 		maxSize = 32 * 1024 * 1024 // Default 32MB
 	}
 
-	wal, err := InitWal(walPath)
+	wal, err := storage.InitWal(walPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize WAL: %w", err)
 	}
@@ -149,6 +151,6 @@ func (m *Memtable) DataBlock() *SkipList {
 	return m.data
 }
 
-func (m *Memtable) WALFile() *WAL {
+func (m *Memtable) WALFile() *storage.WAL {
 	return m.wal
 }
