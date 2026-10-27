@@ -77,9 +77,9 @@ func (l *Vector) Apply(e *Entry, env Env) {
 		coll := op.Space[len(vecPrefix):]
 		switch op.Kind {
 		case format.OpDel:
-			delete(l.m[coll], op.Key)
+			l.del(coll, op.Key)
 		case format.OpPut:
-			delete(l.m[coll], op.Key)
+			l.del(coll, op.Key)
 			plain, ok := env.Open(e, i)
 			if !ok {
 				continue
@@ -101,11 +101,23 @@ func (l *Vector) Apply(e *Entry, env Env) {
 }
 
 func (l *Vector) DropSubject(s string) {
-	for _, c := range l.m {
+	for coll, c := range l.m {
 		for id, e := range c {
 			if e.subject == s {
 				delete(c, id)
 			}
+		}
+		if len(c) == 0 {
+			delete(l.m, coll) // canonical form: no empty collections
+		}
+	}
+}
+
+func (l *Vector) del(coll, id string) {
+	if c := l.m[coll]; c != nil {
+		delete(c, id)
+		if len(c) == 0 {
+			delete(l.m, coll)
 		}
 	}
 }

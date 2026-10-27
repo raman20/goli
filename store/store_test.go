@@ -2,14 +2,14 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
-	"time"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Conformance suite run against every backend.

@@ -1,0 +1,119 @@
+# 2026/10/27 14:16:34.954531 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw entries: 6
+# 2026/10/27 14:16:34.954540 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954541 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "kv"
+# 2026/10/27 14:16:34.954545 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954546 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: ""
+# 2026/10/27 14:16:34.954547 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954562 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954562 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "kv"
+# 2026/10/27 14:16:34.954563 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954565 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: ""
+# 2026/10/27 14:16:34.954566 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954568 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954569 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "kv"
+# 2026/10/27 14:16:34.954570 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954571 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: ""
+# 2026/10/27 14:16:34.954572 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954573 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954574 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "kv"
+# 2026/10/27 14:16:34.954576 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954577 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: ""
+# 2026/10/27 14:16:34.954578 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954579 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954580 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "kv"
+# 2026/10/27 14:16:34.954580 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954582 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: ""
+# 2026/10/27 14:16:34.954583 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954584 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw nops: 1
+# 2026/10/27 14:16:34.954585 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw space: "vec:c"
+# 2026/10/27 14:16:34.954586 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw key: 0
+# 2026/10/27 14:16:34.954587 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw subj: "a"
+# 2026/10/27 14:16:34.954587 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw kind: 0x1
+# 2026/10/27 14:16:34.954588 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw x: 0
+# 2026/10/27 14:16:34.954589 [TestPropDropSubjectEqualsRedactedFold] [rapid] draw y: 1
+# 2026/10/27 14:16:34.954614 [TestPropDropSubjectEqualsRedactedFold] DropSubject != fold(redact):
+# kv=441bb9c65abd topic=de0ed2e5e330 vector=47260a38fb45 index:c.f=71f01ee6618a 
+# kv=441bb9c65abd topic=de0ed2e5e330 vector=5ce7c63fb6bb index:c.f=71f01ee6618a 
+# 
+v0.4.8#13974091530637071202
+0x0
+0x6b74f03291620
+0x6
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
