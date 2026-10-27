@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 )
 
@@ -18,6 +19,7 @@ type FaultProbs struct {
 	Delay      float64 // response is a timeout; effect lands LATER (reordered)
 	Dup        float64 // effect applied, client sees a duplicated-retry 412
 	ReadFail   float64 // Get/List fails
+	Torn       float64 // log/snapshot put: a random PREFIX is stored, then error (crash mid-write)
 }
 
 // Faulty wraps a Store with a seeded fault injector. With a single caller
@@ -79,6 +81,11 @@ func (f *Faulty) PutIfAbsent(ctx context.Context, key string, data []byte) error
 	case f.roll(f.P.FailAfter):
 		err := f.Inner.PutIfAbsent(ctx, key, data)
 		f.Trace = append(f.Trace, fmt.Sprintf("put-fail-after %s %v", key, err))
+		return ErrInjected
+	case f.roll(f.P.Torn) && (strings.HasPrefix(key, "log/") || strings.HasPrefix(key, "snap/")):
+		cut := f.rng.Intn(len(data) + 1)
+		err := f.Inner.PutIfAbsent(ctx, key, data[:cut])
+		f.Trace = append(f.Trace, fmt.Sprintf("put-torn %s %d/%d %v", key, cut, len(data), err))
 		return ErrInjected
 	case f.roll(f.P.Dup):
 		err := f.Inner.PutIfAbsent(ctx, key, data)

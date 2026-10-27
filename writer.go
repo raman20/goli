@@ -276,15 +276,17 @@ func (w *writer) process(batch []*commitReq) {
 		w.recentFloor = w.recent[over-1].lsn
 		w.recent = append([]recentCommit{}, w.recent[over:]...)
 	}
-	for i, r := range accepted {
-		r.done <- commitRes{lsn: entries[i].LSN}
-	}
+	// Snapshots are taken before acking so that, with one client, every
+	// store call happens in a deterministic order (simulation replayability).
 	w.sinceSnap += len(accepted)
 	if w.db.opts.SnapshotEvery > 0 && w.sinceSnap >= w.db.opts.SnapshotEvery {
 		w.sinceSnap = 0
 		if err := w.db.writeSnapshot(ctx, w.l.meta.ID, w.v); err != nil {
 			w.db.logf("goli: snapshot failed (non-fatal): %v", err)
 		}
+	}
+	for i, r := range accepted {
+		r.done <- commitRes{lsn: entries[i].LSN}
 	}
 }
 

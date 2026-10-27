@@ -42,6 +42,14 @@ func NewS3FromURL(u *url.URL) (*S3, error) {
 	if err != nil {
 		return nil, err
 	}
+	if q.Get("create") != "" {
+		ctx := context.Background()
+		if ok, err := c.BucketExists(ctx, u.Host); err == nil && !ok {
+			if err := c.MakeBucket(ctx, u.Host, minio.MakeBucketOptions{Region: q.Get("region")}); err != nil {
+				return nil, err
+			}
+		}
+	}
 	p := strings.Trim(u.Path, "/")
 	if p != "" {
 		p += "/"

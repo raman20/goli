@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"net/url"
+	"time"
 	"errors"
 	"os"
 	"path/filepath"
@@ -80,7 +83,9 @@ func TestS3Conformance(t *testing.T) {
 	if u == "" {
 		t.Skip("set GOLI_TEST_S3=s3://bucket/prefix?endpoint=127.0.0.1:9000&insecure=1 to run against MinIO/S3")
 	}
-	s, err := Open(u)
+	pu, _ := url.Parse(u)
+	pu.Path += fmt.Sprintf("/conf-%d", time.Now().UnixNano())
+	s, err := Open(pu.String())
 	if err != nil {
 		t.Fatal(err)
 	}

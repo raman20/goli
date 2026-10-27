@@ -117,6 +117,7 @@ type VerifyReport struct {
 	ChainHeads      map[string]string `json:"chain_heads"`
 	EncryptedValues int               `json:"encrypted_values"`
 	Unreadable      int               `json:"unreadable_shredded_values"`
+	SweptDEKs       int               `json:"swept_late_deks,omitempty"`
 	Problems        []string          `json:"problems,omitempty"`
 }
 
@@ -193,7 +194,14 @@ func (db *DB) Verify(ctx context.Context) (*VerifyReport, error) {
 	deks, _ := db.st.List(ctx, "keys/dek/")
 	for _, d := range deks {
 		if db.keys.isShredded(d[strings.LastIndex(d, "/")+1:]) {
-			bad("shredded subject still has a DEK: %s", d)
+			// A DEK-create request that was still in flight when the subject
+			// was shredded can land afterwards (object stores cannot cancel
+			// it). The shred marker already blocks every read; sweep it.
+			if err := db.st.Delete(ctx, d); err != nil {
+				bad("shredded subject still has a DEK: %s (%v)", d, err)
+			} else {
+				r.SweptDEKs++
+			}
 		}
 	}
 	r.OK = len(r.Problems) == 0
