@@ -152,12 +152,21 @@ func (r *reader) u64() uint64 {
 
 func (r *reader) uv() uint64 {
 	v, n := binary.Uvarint(r.b)
-	if n <= 0 {
+	if n <= 0 || n != uvarintLen(v) { // reject non-minimal encodings: one payload, one byte string
 		r.err = true
 		return 0
 	}
 	r.b = r.b[n:]
 	return v
+}
+
+func uvarintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
 }
 
 func (r *reader) bytes() []byte {

@@ -104,11 +104,10 @@ func FuzzDecodePayload(f *testing.F) {
 	f.Add(EncodePayload(&Frame{LSN: 1, Ops: []Op{{Kind: OpPut, Key: "a", Value: []byte("b")}}}))
 	f.Fuzz(func(t *testing.T, p []byte) {
 		fr, err := DecodePayload(p)
+		// Canonical: anything that decodes re-encodes to exactly the same bytes,
+		// so the hash chain over payload bytes is unambiguous.
 		if err == nil && !bytes.Equal(EncodePayload(fr), p) {
-			// nil vs empty value both encode as length 0, so only check lengths
-			if len(EncodePayload(fr)) != len(p) {
-				t.Fatal("re-encode length mismatch")
-			}
+			t.Fatalf("non-canonical payload accepted: %x", p)
 		}
 	})
 }
