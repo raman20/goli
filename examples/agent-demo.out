@@ -1,0 +1,61 @@
+
+== 1. Memory: the agent remembers things about alice (KV + doc + vector), tagged subject=alice
+{"lsn":1}
+{"ok":true}
+{"lsn":2}
+{"lsn":3}
+{"lsn":4}
+{"lsn":5}
+-- recall: memories about alice
+"m1"
+-- recall: nearest memory to [1,0,0]
+{"id":"m1","score":0.9938837}
+{"id":"m2","score":0.11043153}
+
+== 2. Tasks: a topic + consumer group; the result and the ack commit atomically in ONE transaction
+{"lsn":6}
+{"lsn":7}
+{"lsn":8,"ops":2}
+-- next unprocessed task for group 'agent' (t1 is already acked; this fetch also acks t2):
+{"lsn":7,"offset":1,"value":"{\"id\":\"t2\",\"do\":\"book bob a flight\"}"}
+-- checkpoint at LSN 10
+
+== 3. Undo: the agent goes rogue on main...
+{"lsn":11}
+{"lsn":12}
+-- main now says: ESPRESSO x4
+error (404): goli: not found
+-- time travel: at LSN 10 alice's pref was: oat milk, no sugar
+-- rewind main to LSN 10 (old head is kept in the reflog, nothing is deleted)
+{"heads":{"main":10},"ok":true}
+-- main says: oat milk, no sugar / result/t1 = ordered salad (no peanuts)
+
+== 4. Try before you buy: a risky plan on a branch, then promote it
+{"heads":{"main":10,"plan-b":10},"ok":true}
+{"lsn":11}
+-- main sees result/t2? 
+error (404): goli: not found
+-- plan-b sees: booked bob seat 12A
+{"heads":{"main":11,"plan-b":11},"ok":true}
+-- after promote, main sees: booked bob seat 12A
+
+== 5. Forget: alice invokes her right to erasure — crypto-shred subject 'alice'
+{"valid_signature":true,"shred_lsn":12,"dek_deleted":true,"chain_head":"0c0f74716ce63485...","signature":"aa5c5c10eefc3d82..."}
+-- KV:
+error (404): goli: not found
+-- time travel:
+error (404): goli: not found
+-- old branch:
+error (404): goli: not found
+-- docs about alice:
+[]
+-- vector recall [1,0,0]:
+{"id":"m2","score":0.11043153}
+-- bob is untouched: {"user":"bob","text":"bob prefers window seats"}
+-- new writes for alice are refused:
+error (410): goli: subject has been crypto-shredded
+
+== 6. Verify the whole history (CRCs, hash chains, fencing, shred proofs)
+{"ok":true,"logs":3,"segments":17,"entries":14,"encrypted_values":7,"unreadable_shredded_values":5,"problems":null}
+-- grep the raw bucket for alice's plaintext:
+no plaintext found in /tmp/agent-demo-data
