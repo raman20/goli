@@ -500,3 +500,36 @@ func TestSnapshotEqualsFold(t *testing.T) {
 		t.Fatal("snapshot+tail != full fold")
 	}
 }
+
+// Regression for the race found by TLC (spec/GoliLog.tla): concurrent
+// openers must never leave the log with epochs going backwards.
+func TestConcurrentOpenersNeverBrickLog(t *testing.T) {
+	for round := 0; round < 30; round++ {
+		st := store.NewMem()
+		db := mustOpen(t, st)
+		db.Put(ctx, "k", []byte("v"))
+		db.Close()
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				d, err := OpenStore(ctx, st, quiet())
+				if err != nil {
+					return // losing an open race is fine (ErrFenced / retry)
+				}
+				d.Put(ctx, fmt.Sprint("w", i), []byte("x"))
+				d.Crash()
+			}(i)
+		}
+		wg.Wait()
+		d, err := OpenStore(ctx, st, quiet())
+		if err != nil {
+			t.Fatalf("round %d: log bricked by racing openers: %v", round, err)
+		}
+		if r, _ := d.Verify(ctx); !r.OK {
+			t.Fatalf("round %d: %+v", round, r)
+		}
+		d.Close()
+	}
+}

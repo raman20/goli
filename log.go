@@ -116,6 +116,9 @@ func (db *DB) recoverLog(ctx context.Context, l *logState, writable bool) error 
 					break
 				}
 			} else {
+				if l.lastEp > db.epoch || h.Epoch > db.epoch {
+					return fmt.Errorf("%w: log %s superseded (epoch %d)", ErrFenced, l.meta.ID, max(l.lastEp, h.Epoch))
+				}
 				if err := db.repairTail(ctx, l, k, seq, data, h, frames, valid, derr); err != nil {
 					return err
 				}
@@ -148,6 +151,12 @@ func (db *DB) recoverLog(ctx context.Context, l *logState, writable bool) error 
 		expectSeq = seq + 1
 	}
 	l.nextSeq = expectSeq
+	if writable && l.lastEp > db.epoch {
+		// A newer writer already fenced this log (found by TLC, GoliLog.tla:
+		// a slow opener must not append an older-epoch fence after a newer
+		// one, which would make the log unrecoverable).
+		return fmt.Errorf("%w: log %s has epoch %d > ours %d", ErrFenced, l.meta.ID, l.lastEp, db.epoch)
+	}
 	return nil
 }
 
