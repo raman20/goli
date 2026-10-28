@@ -1,3 +1,5 @@
+> **⚠️ This project has moved and is archived.** Goli was rewritten from scratch as **[freshDB](https://github.com/raman20/freshdb)**, a unified-log storage engine (KV, topics, documents, vectors and transactions over one object-storage-native log). Please use [github.com/raman20/freshdb](https://github.com/raman20/freshdb) going forward. This repository is kept read-only for history.
+
 # 🚀 Goli: A Unified Storage Engine with Pluggable Index Lenses
 
 Goli is a modular, first-principles database storage engine written in Go. Instead of coupling storage formats to database models (like traditional key-value or vector databases), Goli decouples physical byte storage from querying logic entirely. 
